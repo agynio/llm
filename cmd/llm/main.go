@@ -65,6 +65,7 @@ func run() error {
 	healthServer := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("agynio.api.llm.v1.LLMService", healthpb.HealthCheckResponse_SERVING)
 	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, proxyService))
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddress)
@@ -110,6 +111,8 @@ func run() error {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown http: %w", err)
 	}
+
+	healthServer.Shutdown()
 
 	grpcDone := make(chan struct{})
 	go func() {
