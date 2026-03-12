@@ -22,7 +22,6 @@ func FromEnv() (Config, error) {
 	if cfg.GRPCAddress == "" {
 		cfg.GRPCAddress = defaultGRPCAddress
 	}
-
 	var err error
 	cfg.DatabaseURL, err = requiredEnv("DATABASE_URL")
 	if err != nil {

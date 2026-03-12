@@ -37,7 +37,6 @@ type ProviderWithToken struct {
 	Provider
 	Token string
 }
-
 type CreateInput struct {
 	Endpoint   string
 	AuthMethod AuthMethod
@@ -50,7 +49,6 @@ type UpdateInput struct {
 	AuthMethod *AuthMethod
 	Token      *string
 }
-
 type ListResult struct {
 	Providers  []Provider
 	NextCursor *PageCursor
@@ -102,7 +100,6 @@ func (s *Store) GetWithToken(ctx context.Context, id uuid.UUID) (ProviderWithTok
 	provider.AuthMethod = AuthMethod(authMethod)
 	return provider, nil
 }
-
 func (s *Store) Update(ctx context.Context, input UpdateInput) (Provider, error) {
 	setClauses := make([]string, 0, 3)
 	args := make([]any, 0, 4)
