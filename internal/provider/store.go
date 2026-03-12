@@ -37,6 +37,7 @@ type ProviderWithToken struct {
 	Provider
 	Token string
 }
+
 type CreateInput struct {
 	Endpoint   string
 	AuthMethod AuthMethod
@@ -49,6 +50,7 @@ type UpdateInput struct {
 	AuthMethod *AuthMethod
 	Token      *string
 }
+
 type ListResult struct {
 	Providers  []Provider
 	NextCursor *PageCursor

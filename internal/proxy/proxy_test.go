@@ -41,6 +41,46 @@ func (f *fakeModelStore) Get(ctx context.Context, id uuid.UUID) (model.Model, er
 	return f.model, nil
 }
 
+func TestParseRequestBody(t *testing.T) {
+	modelID := uuid.MustParse("5a987e7c-cb1f-4d6f-9ebf-2305e6f7b0ea")
+	body := []byte(`{"model":"` + modelID.String() + `","stream":true}`)
+
+	gotID, gotStream, err := parseRequestBody(body)
+	if err != nil {
+		t.Fatalf("parseRequestBody: %v", err)
+	}
+	if gotID != modelID {
+		t.Fatalf("expected model id %s, got %s", modelID, gotID)
+	}
+	if !gotStream {
+		t.Fatalf("expected stream true")
+	}
+}
+
+func TestParseRequestBodyErrors(t *testing.T) {
+	modelID := uuid.MustParse("5893a536-c0ba-4d68-acde-bf1d703514ef")
+	cases := []struct {
+		name string
+		body string
+		want error
+	}{
+		{name: "invalid json", body: "{", want: ErrInvalidBody},
+		{name: "missing model", body: `{"stream":true}`, want: ErrMissingModel},
+		{name: "model not uuid", body: `{"model":"not-a-uuid"}`, want: ErrInvalidBody},
+		{name: "stream wrong type", body: `{"model":"` + modelID.String() + `","stream":"true"}`, want: ErrInvalidBody},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseRequestBody([]byte(tc.body))
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("expected error %v, got %v", tc.want, err)
+			}
+		})
+	}
+}
 func TestUpdateRequestBody(t *testing.T) {
 	remote := "remote-model"
 	body := []byte(`{"model":"local","stream":false,"extra":1}`)
@@ -160,6 +200,23 @@ func TestUpdateRequestBodyRejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestUpdateRequestPayloadRoundTrip(t *testing.T) {
+	payload := map[string]any{"model": "local", "stream": false}
+	updated, err := updateRequestPayload(payload, "remote", true)
+	if err != nil {
+		t.Fatalf("updateRequestPayload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(updated, &decoded); err != nil {
+		t.Fatalf("unmarshal updated payload: %v", err)
+	}
+	if decoded["model"] != "remote" {
+		t.Fatalf("expected model remote, got %v", decoded["model"])
+	}
+	if decoded["stream"] != true {
+		t.Fatalf("expected stream true, got %v", decoded["stream"])
+	}
+}
 func TestResolverResolveTimeFields(t *testing.T) {
 	modelID := uuid.MustParse("65563f15-6e3f-4c7b-86b9-dae97d9b4d2a")
 	providerID := uuid.MustParse("e8b2293a-3a2e-4693-8a94-9bcf1b7d5d42")

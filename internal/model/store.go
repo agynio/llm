@@ -38,6 +38,7 @@ type UpdateInput struct {
 	ProviderID *uuid.UUID
 	RemoteName *string
 }
+
 type ListFilter struct {
 	ProviderID *uuid.UUID
 }
