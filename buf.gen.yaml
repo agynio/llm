@@ -1,0 +1,14 @@
+version: v1
+
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - Magynio/api/llm/v1/llm.proto=github.com/agynio/llm/gen/go/agynio/api/llm/v1
+  - plugin: buf.build/grpc/go
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=false
+      - Magynio/api/llm/v1/llm.proto=github.com/agynio/llm/gen/go/agynio/api/llm/v1
