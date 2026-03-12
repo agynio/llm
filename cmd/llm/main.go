@@ -21,6 +21,8 @@ import (
 	"github.com/agynio/llm/internal/proxy"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -60,6 +62,9 @@ func run() error {
 	proxyService := proxy.NewService(resolver, &http.Client{})
 
 	grpcServer := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, proxyService))
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddress)
