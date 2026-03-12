@@ -1,0 +1,2 @@
+{{- include "llm.configureEnv" . -}}
+{{- include "service-base.deployment" . -}}

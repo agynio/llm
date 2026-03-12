@@ -1,0 +1,11 @@
+.git
+.github
+charts
+dist
+*.log
+node_modules
+tmp
+.vscode
+.idea
+.env
+**/*.swp
