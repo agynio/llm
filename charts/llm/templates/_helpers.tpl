@@ -18,9 +18,6 @@
   {{- $_ := set $dbVar "valueFrom" (dict "secretKeyRef" (dict "name" $dbSecret "key" $dbKey)) -}}
 {{- else }}
   {{- $dbValue := trimAll " \n\t" (default "" .Values.llm.databaseUrl.value) -}}
-  {{- if not $dbValue }}
-    {{- $dbValue = trimAll " \n\t" (default "" .Values.database.url) -}}
-  {{- end }}
   {{- $dbValue = required "llm.databaseUrl.value is required" $dbValue -}}
   {{- $_ := set $dbVar "value" $dbValue -}}
 {{- end }}

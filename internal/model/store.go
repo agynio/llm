@@ -39,11 +39,6 @@ type UpdateInput struct {
 	RemoteName *string
 }
 
-type PageCursor struct {
-	CreatedAt time.Time
-	ID        uuid.UUID
-}
-
 type ListFilter struct {
 	ProviderID *uuid.UUID
 }

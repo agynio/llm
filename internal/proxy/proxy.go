@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -22,6 +23,8 @@ var (
 	ErrUnsupportedAuthMethod = errors.New("unsupported auth method")
 	ErrMissingToken          = errors.New("provider token is required")
 )
+
+const maxRequestBodySize int64 = 1 << 20
 
 type ProviderStore interface {
 	GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error)
@@ -75,9 +78,6 @@ type Service struct {
 }
 
 func NewService(resolver *Resolver, client *http.Client) *Service {
-	if client == nil {
-		client = http.DefaultClient
-	}
 	return &Service{resolver: resolver, client: client}
 }
 
@@ -90,7 +90,7 @@ func (s *Service) CreateResponse(ctx context.Context, modelID uuid.UUID, body []
 	if err != nil {
 		return Response{}, err
 	}
-	return s.doRequest(ctx, resolved, updated, false)
+	return s.doRequest(ctx, resolved, updated)
 }
 
 func (s *Service) CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (StreamResponse, error) {
@@ -105,8 +105,32 @@ func (s *Service) CreateResponseStream(ctx context.Context, modelID uuid.UUID, b
 	return s.doStreamRequest(ctx, resolved, updated)
 }
 
-func (s *Service) doRequest(ctx context.Context, resolved ResolvedModel, body []byte, stream bool) (Response, error) {
-	req, err := s.buildRequest(ctx, resolved, body, stream)
+func (s *Service) createResponseFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (Response, error) {
+	resolved, err := s.resolver.Resolve(ctx, modelID)
+	if err != nil {
+		return Response{}, err
+	}
+	updated, err := updateRequestPayload(payload, resolved.Model.RemoteName, false)
+	if err != nil {
+		return Response{}, err
+	}
+	return s.doRequest(ctx, resolved, updated)
+}
+
+func (s *Service) createResponseStreamFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (StreamResponse, error) {
+	resolved, err := s.resolver.Resolve(ctx, modelID)
+	if err != nil {
+		return StreamResponse{}, err
+	}
+	updated, err := updateRequestPayload(payload, resolved.Model.RemoteName, true)
+	if err != nil {
+		return StreamResponse{}, err
+	}
+	return s.doStreamRequest(ctx, resolved, updated)
+}
+
+func (s *Service) doRequest(ctx context.Context, resolved ResolvedModel, body []byte) (Response, error) {
+	req, err := s.buildRequest(ctx, resolved, body, false)
 	if err != nil {
 		return Response{}, err
 	}
@@ -139,7 +163,7 @@ func (s *Service) doStreamRequest(ctx context.Context, resolved ResolvedModel, b
 func (s *Service) buildRequest(ctx context.Context, resolved ResolvedModel, body []byte, stream bool) (*http.Request, error) {
 	endpoint := strings.TrimRight(resolved.Provider.Endpoint, "/")
 	if endpoint == "" {
-		return nil, fmt.Errorf("%w: provider endpoint is required", ErrInvalidBody)
+		panic("provider endpoint is empty")
 	}
 	url := endpoint + "/v1/responses"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -152,9 +176,6 @@ func (s *Service) buildRequest(ctx context.Context, resolved ResolvedModel, body
 	}
 
 	method := resolved.Provider.AuthMethod
-	if method == "" {
-		method = provider.AuthMethodBearer
-	}
 	if method != provider.AuthMethodBearer {
 		return nil, ErrUnsupportedAuthMethod
 	}
@@ -242,19 +263,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-	_, modelID, stream, err := parseRequestBody(body)
+	payload, modelID, stream, err := parseRequestPayload(body)
 	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
 
 	if stream {
-		resp, err := h.service.CreateResponseStream(r.Context(), modelID, body)
+		resp, err := h.service.createResponseStreamFromPayload(r.Context(), modelID, payload)
 		if err != nil {
 			writeProxyError(w, err)
 			return
@@ -268,12 +290,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := streamToClient(r.Context(), w, resp.Body); err != nil {
-			return
+			log.Printf("stream response failed: %v", err)
 		}
 		return
 	}
 
-	resp, err := h.service.CreateResponse(r.Context(), modelID, body)
+	resp, err := h.service.createResponseFromPayload(r.Context(), modelID, payload)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -283,7 +305,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.Body)
 }
 
-func parseRequestBody(body []byte) (map[string]any, uuid.UUID, bool, error) {
+func parseRequestBody(body []byte) (uuid.UUID, bool, error) {
+	_, modelID, stream, err := parseRequestPayload(body)
+	return modelID, stream, err
+}
+
+func parseRequestPayload(body []byte) (map[string]any, uuid.UUID, bool, error) {
 	if len(body) == 0 {
 		return nil, uuid.UUID{}, false, fmt.Errorf("%w: body is empty", ErrInvalidBody)
 	}
@@ -325,6 +352,10 @@ func updateRequestBody(body []byte, remoteName string, forceStream bool) ([]byte
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidBody, err)
 	}
+	return updateRequestPayload(payload, remoteName, forceStream)
+}
+
+func updateRequestPayload(payload map[string]any, remoteName string, forceStream bool) ([]byte, error) {
 	payload["model"] = remoteName
 	if forceStream {
 		payload["stream"] = true

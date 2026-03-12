@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -20,6 +21,7 @@ const (
 
 var (
 	ErrProviderNotFound = errors.New("provider not found")
+	ErrProviderInUse    = errors.New("provider in use")
 	ErrNoFieldsToUpdate = errors.New("no fields to update")
 )
 
@@ -47,11 +49,6 @@ type UpdateInput struct {
 	Endpoint   *string
 	AuthMethod *AuthMethod
 	Token      *string
-}
-
-type PageCursor struct {
-	CreatedAt time.Time
-	ID        uuid.UUID
 }
 
 type ListResult struct {
@@ -146,6 +143,10 @@ func (s *Store) Update(ctx context.Context, input UpdateInput) (Provider, error)
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	result, err := s.pool.Exec(ctx, `DELETE FROM llm_providers WHERE id = $1`, id)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrProviderInUse
+		}
 		return fmt.Errorf("delete provider: %w", err)
 	}
 	if result.RowsAffected() == 0 {

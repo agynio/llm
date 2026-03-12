@@ -3,6 +3,7 @@ package grpcserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -405,14 +406,11 @@ func toProtoAuthMethod(method provider.AuthMethod) llmv1.AuthMethod {
 	case provider.AuthMethodBearer:
 		return llmv1.AuthMethod_AUTH_METHOD_BEARER
 	default:
-		return llmv1.AuthMethod_AUTH_METHOD_UNSPECIFIED
+		panic(fmt.Sprintf("unexpected auth method: %q", method))
 	}
 }
 
 func toStatusError(err error) error {
-	if err == nil {
-		return nil
-	}
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
@@ -421,6 +419,9 @@ func toStatusError(err error) error {
 	}
 	if errors.Is(err, provider.ErrNoFieldsToUpdate) || errors.Is(err, model.ErrNoFieldsToUpdate) {
 		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	if errors.Is(err, provider.ErrProviderInUse) {
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if errors.Is(err, proxy.ErrInvalidBody) || errors.Is(err, proxy.ErrMissingModel) {
 		return status.Error(codes.InvalidArgument, err.Error())
