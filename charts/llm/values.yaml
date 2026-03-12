@@ -61,10 +61,17 @@ service:
       port: 50051
       targetPort: grpc
       protocol: TCP
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
 
 containerPorts:
   - name: grpc
     containerPort: 50051
+    protocol: TCP
+  - name: http
+    containerPort: 8080
     protocol: TCP
 
 command: []
@@ -147,6 +154,7 @@ metrics:
 
 llm:
   grpcAddress: ":50051"
+  httpAddress: ":8080"
   databaseUrl:
     value: ""
     existingSecret: ""
