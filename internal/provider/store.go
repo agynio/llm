@@ -31,6 +31,11 @@ type Provider struct {
 	UpdatedAt  time.Time
 }
 
+type ProviderWithToken struct {
+	Provider
+	Token string
+}
+
 type CreateInput struct {
 	Endpoint   string
 	AuthMethod AuthMethod
@@ -82,6 +87,20 @@ func (s *Store) Get(ctx context.Context, id uuid.UUID) (Provider, error) {
 			return Provider{}, ErrProviderNotFound
 		}
 		return Provider{}, fmt.Errorf("get provider: %w", err)
+	}
+	provider.AuthMethod = AuthMethod(authMethod)
+	return provider, nil
+}
+
+func (s *Store) GetWithToken(ctx context.Context, id uuid.UUID) (ProviderWithToken, error) {
+	row := s.pool.QueryRow(ctx, `SELECT id, endpoint, auth_method, token, created_at, updated_at FROM llm_providers WHERE id = $1`, id)
+	var provider ProviderWithToken
+	var authMethod string
+	if err := row.Scan(&provider.ID, &provider.Endpoint, &authMethod, &provider.Token, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ProviderWithToken{}, ErrProviderNotFound
+		}
+		return ProviderWithToken{}, fmt.Errorf("get provider: %w", err)
 	}
 	provider.AuthMethod = AuthMethod(authMethod)
 	return provider, nil
