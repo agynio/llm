@@ -1,59 +1,28 @@
 package provider
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"time"
 
-	"github.com/google/uuid"
+	"github.com/agynio/llm/internal/pagination"
 )
 
-const (
-	defaultPageSize int32 = 50
-	maxPageSize     int32 = 100
-)
+type PageCursor = pagination.PageCursor
 
 func normalizePageSize(size int32) int32 {
-	if size <= 0 {
-		return defaultPageSize
-	}
-	if size > maxPageSize {
-		return maxPageSize
-	}
-	return size
-}
-
-type pageToken struct {
-	CreatedAt time.Time `json:"created_at"`
-	ID        string    `json:"id"`
+	return pagination.NormalizePageSize(size)
 }
 
 func EncodePageToken(cursor PageCursor) (string, error) {
-	payload := pageToken{CreatedAt: cursor.CreatedAt, ID: cursor.ID.String()}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
+	return pagination.EncodePageToken(cursor, nil)
 }
 
 func DecodePageToken(token string) (PageCursor, error) {
-	if token == "" {
-		return PageCursor{}, errors.New("empty token")
-	}
-	data, err := base64.RawURLEncoding.DecodeString(token)
+	cursor, providerID, err := pagination.DecodePageToken(token)
 	if err != nil {
-		return PageCursor{}, fmt.Errorf("decode token: %w", err)
+		return PageCursor{}, err
 	}
-	var payload pageToken
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return PageCursor{}, fmt.Errorf("unmarshal token: %w", err)
+	if providerID != nil {
+		return PageCursor{}, errors.New("unexpected provider id")
 	}
-	id, err := uuid.Parse(payload.ID)
-	if err != nil {
-		return PageCursor{}, fmt.Errorf("parse id: %w", err)
-	}
-	return PageCursor{CreatedAt: payload.CreatedAt, ID: id}, nil
+	return cursor, nil
 }
