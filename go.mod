@@ -1,6 +1,6 @@
 module github.com/agynio/llm
 
-go 1.25.7
+go 1.25
 
 require (
 	google.golang.org/grpc v1.79.2
