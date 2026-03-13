@@ -102,30 +102,6 @@ func (s *Service) CreateResponseStream(ctx context.Context, modelID uuid.UUID, b
 	return s.doStreamRequest(ctx, resolved, updated)
 }
 
-func (s *Service) createResponseFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (Response, error) {
-	resolved, err := s.resolver.Resolve(ctx, modelID)
-	if err != nil {
-		return Response{}, err
-	}
-	updated, err := updateRequestPayload(payload, resolved.Model.RemoteName, false)
-	if err != nil {
-		return Response{}, err
-	}
-	return s.doRequest(ctx, resolved, updated)
-}
-
-func (s *Service) createResponseStreamFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (StreamResponse, error) {
-	resolved, err := s.resolver.Resolve(ctx, modelID)
-	if err != nil {
-		return StreamResponse{}, err
-	}
-	updated, err := updateRequestPayload(payload, resolved.Model.RemoteName, true)
-	if err != nil {
-		return StreamResponse{}, err
-	}
-	return s.doStreamRequest(ctx, resolved, updated)
-}
-
 func (s *Service) doRequest(ctx context.Context, resolved ResolvedModel, body []byte) (Response, error) {
 	req, err := s.buildRequest(ctx, resolved, body, false)
 	if err != nil {
@@ -249,10 +225,6 @@ func updateRequestBody(body []byte, remoteName string, forceStream bool) ([]byte
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidBody, err)
 	}
-	return updateRequestPayload(payload, remoteName, forceStream)
-}
-
-func updateRequestPayload(payload map[string]any, remoteName string, forceStream bool) ([]byte, error) {
 	payload["model"] = remoteName
 	if forceStream {
 		payload["stream"] = true

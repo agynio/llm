@@ -160,24 +160,6 @@ func TestUpdateRequestBodyRejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestUpdateRequestPayloadRoundTrip(t *testing.T) {
-	payload := map[string]any{"model": "local", "stream": false}
-	updated, err := updateRequestPayload(payload, "remote", true)
-	if err != nil {
-		t.Fatalf("updateRequestPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(updated, &decoded); err != nil {
-		t.Fatalf("unmarshal updated payload: %v", err)
-	}
-	if decoded["model"] != "remote" {
-		t.Fatalf("expected model remote, got %v", decoded["model"])
-	}
-	if decoded["stream"] != true {
-		t.Fatalf("expected stream true, got %v", decoded["stream"])
-	}
-}
-
 func TestResolverResolveTimeFields(t *testing.T) {
 	modelID := uuid.MustParse("65563f15-6e3f-4c7b-86b9-dae97d9b4d2a")
 	providerID := uuid.MustParse("e8b2293a-3a2e-4693-8a94-9bcf1b7d5d42")
