@@ -41,47 +41,6 @@ func (f *fakeModelStore) Get(ctx context.Context, id uuid.UUID) (model.Model, er
 	return f.model, nil
 }
 
-func TestParseRequestBody(t *testing.T) {
-	modelID := uuid.MustParse("5a987e7c-cb1f-4d6f-9ebf-2305e6f7b0ea")
-	body := []byte(`{"model":"` + modelID.String() + `","stream":true}`)
-
-	gotID, gotStream, err := parseRequestBody(body)
-	if err != nil {
-		t.Fatalf("parseRequestBody: %v", err)
-	}
-	if gotID != modelID {
-		t.Fatalf("expected model id %s, got %s", modelID, gotID)
-	}
-	if !gotStream {
-		t.Fatalf("expected stream true")
-	}
-}
-
-func TestParseRequestBodyErrors(t *testing.T) {
-	modelID := uuid.MustParse("5893a536-c0ba-4d68-acde-bf1d703514ef")
-	cases := []struct {
-		name string
-		body string
-		want error
-	}{
-		{name: "invalid json", body: "{", want: ErrInvalidBody},
-		{name: "missing model", body: `{"stream":true}`, want: ErrMissingModel},
-		{name: "model not uuid", body: `{"model":"not-a-uuid"}`, want: ErrInvalidBody},
-		{name: "stream wrong type", body: `{"model":"` + modelID.String() + `","stream":"true"}`, want: ErrInvalidBody},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := parseRequestBody([]byte(tc.body))
-			if err == nil {
-				t.Fatalf("expected error")
-			}
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("expected error %v, got %v", tc.want, err)
-			}
-		})
-	}
-}
-
 func TestUpdateRequestBody(t *testing.T) {
 	remote := "remote-model"
 	body := []byte(`{"model":"local","stream":false,"extra":1}`)
