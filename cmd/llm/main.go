@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	llmv1 "github.com/agynio/llm/gen/go/agynio/api/llm/v1"
+	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/config"
 	"github.com/agynio/llm/internal/db"
 	"github.com/agynio/llm/internal/grpcserver"
