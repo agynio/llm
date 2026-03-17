@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	llmv1 "github.com/agynio/llm/gen/go/agynio/api/llm/v1"
+	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
 	"github.com/agynio/llm/internal/proxy"

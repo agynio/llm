@@ -1,28 +1,46 @@
 # syntax=docker/dockerfile:1.8
+ARG GO_VERSION=1.25
+ARG BUF_VERSION=1.66.0
 
-FROM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS buf
+ARG BUF_VERSION
+RUN apk add --no-cache curl
+RUN curl -sSL \
+      "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-$(uname -s)-$(uname -m)" \
+      -o /usr/local/bin/buf && \
+    chmod +x /usr/local/bin/buf
 
-ARG TARGETOS
-ARG TARGETARCH
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 
 WORKDIR /src
 
+COPY --from=buf /usr/local/bin/buf /usr/local/bin/buf
+
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
     go mod download
+
+COPY buf.gen.yaml buf.yaml ./
+RUN buf generate buf.build/agynio/api --path agynio/api/llm/v1
 
 COPY . .
 
+ARG TARGETOS TARGETARCH
+ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
+
 RUN --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags "-s -w" -o /out/llm ./cmd/llm
 
-FROM gcr.io/distroless/base-debian12 AS runtime
+FROM alpine:3.21 AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /out/llm /usr/local/bin/llm
+COPY --from=build /out/llm /app/llm
 
-USER nonroot:nonroot
+RUN addgroup -S app && adduser -S app -G app
 
-ENTRYPOINT ["/usr/local/bin/llm"]
+USER app
+
+ENTRYPOINT ["/app/llm"]
