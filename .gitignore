@@ -1,3 +1,4 @@
+.gen/
 *.local
 .env
 .DS_Store
