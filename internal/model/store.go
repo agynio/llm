@@ -19,6 +19,7 @@ var (
 
 type Model struct {
 	ID         uuid.UUID
+	TenantID   uuid.UUID
 	Name       string
 	ProviderID uuid.UUID
 	RemoteName string
@@ -27,6 +28,7 @@ type Model struct {
 }
 
 type CreateInput struct {
+	TenantID   uuid.UUID
 	Name       string
 	ProviderID uuid.UUID
 	RemoteName string
@@ -34,6 +36,7 @@ type CreateInput struct {
 
 type UpdateInput struct {
 	ID         uuid.UUID
+	TenantID   uuid.UUID
 	Name       *string
 	ProviderID *uuid.UUID
 	RemoteName *string
@@ -56,19 +59,19 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-func (s *Store) Create(ctx context.Context, input CreateInput) (Model, error) {
-	row := s.pool.QueryRow(ctx, `INSERT INTO models (name, llm_provider_id, remote_name) VALUES ($1, $2, $3) RETURNING id, name, llm_provider_id, remote_name, created_at, updated_at`, input.Name, input.ProviderID, input.RemoteName)
+func (s *Store) Create(ctx context.Context, tenantID uuid.UUID, input CreateInput) (Model, error) {
+	row := s.pool.QueryRow(ctx, `INSERT INTO models (tenant_id, name, llm_provider_id, remote_name) VALUES ($1, $2, $3, $4) RETURNING id, tenant_id, name, llm_provider_id, remote_name, created_at, updated_at`, tenantID, input.Name, input.ProviderID, input.RemoteName)
 	var model Model
-	if err := row.Scan(&model.ID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
+	if err := row.Scan(&model.ID, &model.TenantID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
 		return Model{}, fmt.Errorf("insert model: %w", err)
 	}
 	return model, nil
 }
 
-func (s *Store) Get(ctx context.Context, id uuid.UUID) (Model, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, name, llm_provider_id, remote_name, created_at, updated_at FROM models WHERE id = $1`, id)
+func (s *Store) Get(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Model, error) {
+	row := s.pool.QueryRow(ctx, `SELECT id, tenant_id, name, llm_provider_id, remote_name, created_at, updated_at FROM models WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	var model Model
-	if err := row.Scan(&model.ID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
+	if err := row.Scan(&model.ID, &model.TenantID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Model{}, ErrModelNotFound
 		}
@@ -77,9 +80,9 @@ func (s *Store) Get(ctx context.Context, id uuid.UUID) (Model, error) {
 	return model, nil
 }
 
-func (s *Store) Update(ctx context.Context, input UpdateInput) (Model, error) {
+func (s *Store) Update(ctx context.Context, tenantID uuid.UUID, input UpdateInput) (Model, error) {
 	setClauses := make([]string, 0, 4)
-	args := make([]any, 0, 5)
+	args := make([]any, 0, 6)
 
 	if input.Name != nil {
 		setClauses = append(setClauses, fmt.Sprintf("name = $%d", len(args)+1))
@@ -97,13 +100,15 @@ func (s *Store) Update(ctx context.Context, input UpdateInput) (Model, error) {
 		return Model{}, ErrNoFieldsToUpdate
 	}
 	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, input.ID)
+	idIndex := len(args) + 1
+	tenantIndex := len(args) + 2
+	args = append(args, input.ID, tenantID)
 
-	query := fmt.Sprintf("UPDATE models SET %s WHERE id = $%d RETURNING id, name, llm_provider_id, remote_name, created_at, updated_at", strings.Join(setClauses, ", "), len(args))
+	query := fmt.Sprintf("UPDATE models SET %s WHERE id = $%d AND tenant_id = $%d RETURNING id, tenant_id, name, llm_provider_id, remote_name, created_at, updated_at", strings.Join(setClauses, ", "), idIndex, tenantIndex)
 	row := s.pool.QueryRow(ctx, query, args...)
 
 	var model Model
-	if err := row.Scan(&model.ID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
+	if err := row.Scan(&model.ID, &model.TenantID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Model{}, ErrModelNotFound
 		}
@@ -112,8 +117,8 @@ func (s *Store) Update(ctx context.Context, input UpdateInput) (Model, error) {
 	return model, nil
 }
 
-func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM models WHERE id = $1`, id)
+func (s *Store) Delete(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM models WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		return fmt.Errorf("delete model: %w", err)
 	}
@@ -123,26 +128,21 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) List(ctx context.Context, filter ListFilter, pageSize int32, cursor *PageCursor) (ListResult, error) {
+func (s *Store) List(ctx context.Context, tenantID uuid.UUID, filter ListFilter, pageSize int32, cursor *PageCursor) (ListResult, error) {
 	limit := normalizePageSize(pageSize)
 
 	query := strings.Builder{}
-	query.WriteString(`SELECT id, name, llm_provider_id, remote_name, created_at, updated_at FROM models`)
+	query.WriteString(`SELECT id, tenant_id, name, llm_provider_id, remote_name, created_at, updated_at FROM models WHERE tenant_id = $1`)
 
-	args := make([]any, 0, 4)
-	paramIndex := 1
+	args := []any{tenantID}
+	paramIndex := 2
 	if filter.ProviderID != nil {
-		query.WriteString(fmt.Sprintf(" WHERE llm_provider_id = $%d", paramIndex))
+		query.WriteString(fmt.Sprintf(" AND llm_provider_id = $%d", paramIndex))
 		args = append(args, *filter.ProviderID)
 		paramIndex++
 	}
 	if cursor != nil {
-		if len(args) == 0 {
-			query.WriteString(" WHERE")
-		} else {
-			query.WriteString(" AND")
-		}
-		query.WriteString(fmt.Sprintf(" (created_at, id) > ($%d, $%d)", paramIndex, paramIndex+1))
+		query.WriteString(fmt.Sprintf(" AND (created_at, id) > ($%d, $%d)", paramIndex, paramIndex+1))
 		args = append(args, cursor.CreatedAt, cursor.ID)
 		paramIndex += 2
 	}
@@ -164,7 +164,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter, pageSize int32, cur
 	)
 	for rows.Next() {
 		var model Model
-		if err := rows.Scan(&model.ID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
+		if err := rows.Scan(&model.ID, &model.TenantID, &model.Name, &model.ProviderID, &model.RemoteName, &model.CreatedAt, &model.UpdatedAt); err != nil {
 			return ListResult{}, fmt.Errorf("scan model: %w", err)
 		}
 		if int32(len(models)) == limit {
