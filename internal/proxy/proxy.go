@@ -48,7 +48,7 @@ func NewResolver(providers ProviderStore, models ModelStore) *Resolver {
 	return &Resolver{providers: providers, models: models}
 }
 
-func (r *Resolver) Resolve(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID) (ResolvedModel, error) {
+func (r *Resolver) Resolve(ctx context.Context, modelID uuid.UUID) (ResolvedModel, error) {
 	mdl, err := r.models.Get(ctx, modelID)
 	if err != nil {
 		return ResolvedModel{}, err
@@ -81,8 +81,8 @@ func NewService(resolver *Resolver, client *http.Client) *Service {
 	return &Service{resolver: resolver, client: client}
 }
 
-func (s *Service) CreateResponse(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (Response, error) {
-	resolved, err := s.resolver.Resolve(ctx, organizationID, modelID)
+func (s *Service) CreateResponse(ctx context.Context, modelID uuid.UUID, body []byte) (Response, error) {
+	resolved, err := s.resolver.Resolve(ctx, modelID)
 	if err != nil {
 		return Response{}, err
 	}
@@ -93,8 +93,8 @@ func (s *Service) CreateResponse(ctx context.Context, organizationID uuid.UUID, 
 	return s.doRequest(ctx, resolved, updated)
 }
 
-func (s *Service) CreateResponseStream(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (StreamResponse, error) {
-	resolved, err := s.resolver.Resolve(ctx, organizationID, modelID)
+func (s *Service) CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (StreamResponse, error) {
+	resolved, err := s.resolver.Resolve(ctx, modelID)
 	if err != nil {
 		return StreamResponse{}, err
 	}
@@ -105,8 +105,8 @@ func (s *Service) CreateResponseStream(ctx context.Context, organizationID uuid.
 	return s.doStreamRequest(ctx, resolved, updated)
 }
 
-func (s *Service) createResponseFromPayload(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, payload map[string]any) (Response, error) {
-	resolved, err := s.resolver.Resolve(ctx, organizationID, modelID)
+func (s *Service) createResponseFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (Response, error) {
+	resolved, err := s.resolver.Resolve(ctx, modelID)
 	if err != nil {
 		return Response{}, err
 	}
@@ -117,8 +117,8 @@ func (s *Service) createResponseFromPayload(ctx context.Context, organizationID 
 	return s.doRequest(ctx, resolved, updated)
 }
 
-func (s *Service) createResponseStreamFromPayload(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, payload map[string]any) (StreamResponse, error) {
-	resolved, err := s.resolver.Resolve(ctx, organizationID, modelID)
+func (s *Service) createResponseStreamFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (StreamResponse, error) {
+	resolved, err := s.resolver.Resolve(ctx, modelID)
 	if err != nil {
 		return StreamResponse{}, err
 	}
@@ -274,14 +274,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(w, err)
 		return
 	}
-	organizationID, err := parseOrganizationID(r.Header)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	if stream {
-		resp, err := h.service.createResponseStreamFromPayload(r.Context(), organizationID, modelID, payload)
+		resp, err := h.service.createResponseStreamFromPayload(r.Context(), modelID, payload)
 		if err != nil {
 			writeProxyError(w, err)
 			return
@@ -300,7 +294,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.service.createResponseFromPayload(r.Context(), organizationID, modelID, payload)
+	resp, err := h.service.createResponseFromPayload(r.Context(), modelID, payload)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -308,18 +302,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(w.Header(), resp.Header, nil)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(resp.Body)
-}
-
-func parseOrganizationID(header http.Header) (uuid.UUID, error) {
-	value := strings.TrimSpace(header.Get("X-Organization-Id"))
-	if value == "" {
-		return uuid.Nil, errors.New("organization id is required")
-	}
-	parsed, err := uuid.Parse(value)
-	if err != nil {
-		return uuid.Nil, errors.New("organization id must be a valid UUID")
-	}
-	return parsed, nil
 }
 
 func parseRequestPayload(body []byte) (map[string]any, uuid.UUID, bool, error) {

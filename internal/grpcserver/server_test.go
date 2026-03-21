@@ -124,20 +124,16 @@ func (f *fakeModelStore) List(ctx context.Context, organizationID uuid.UUID, fil
 }
 
 type fakeProxy struct {
-	createOrganizationID uuid.UUID
-	createModelID        uuid.UUID
-	createStreamOrgID    uuid.UUID
-	createStreamModelID  uuid.UUID
+	createModelID       uuid.UUID
+	createStreamModelID uuid.UUID
 }
 
-func (f *fakeProxy) CreateResponse(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.Response, error) {
-	f.createOrganizationID = organizationID
+func (f *fakeProxy) CreateResponse(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.Response, error) {
 	f.createModelID = modelID
 	return proxy.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: []byte("ok")}, nil
 }
 
-func (f *fakeProxy) CreateResponseStream(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error) {
-	f.createStreamOrgID = organizationID
+func (f *fakeProxy) CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error) {
 	f.createStreamModelID = modelID
 	return proxy.StreamResponse{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("data: hello\n\n"))}, nil
 }
@@ -348,9 +344,6 @@ func TestCreateResponseUsesModelID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
-	if proxyClient.createOrganizationID != uuid.Nil {
-		t.Fatalf("expected nil organization, got %s", proxyClient.createOrganizationID)
-	}
 	if proxyClient.createModelID != modelID {
 		t.Fatalf("expected model id %s, got %s", modelID, proxyClient.createModelID)
 	}
@@ -366,9 +359,6 @@ func TestCreateResponseStreamUsesModelID(t *testing.T) {
 	err := server.CreateResponseStream(&llmv1.CreateResponseStreamRequest{ModelId: modelID.String(), Body: []byte("body")}, stream)
 	if err != nil {
 		t.Fatalf("CreateResponseStream: %v", err)
-	}
-	if proxyClient.createStreamOrgID != uuid.Nil {
-		t.Fatalf("expected nil organization, got %s", proxyClient.createStreamOrgID)
 	}
 	if proxyClient.createStreamModelID != modelID {
 		t.Fatalf("expected model id %s, got %s", modelID, proxyClient.createStreamModelID)

@@ -35,8 +35,8 @@ type ModelStore interface {
 }
 
 type Proxy interface {
-	CreateResponse(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.Response, error)
-	CreateResponseStream(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error)
+	CreateResponse(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.Response, error)
+	CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error)
 }
 
 type Server struct {
@@ -351,7 +351,6 @@ func (s *Server) CreateResponse(ctx context.Context, req *llmv1.CreateResponseRe
 	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	organizationID := uuid.Nil
 
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
@@ -361,7 +360,7 @@ func (s *Server) CreateResponse(ctx context.Context, req *llmv1.CreateResponseRe
 		return nil, status.Error(codes.InvalidArgument, "body is required")
 	}
 
-	resp, err := s.proxy.CreateResponse(ctx, organizationID, modelID, req.GetBody())
+	resp, err := s.proxy.CreateResponse(ctx, modelID, req.GetBody())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -375,7 +374,6 @@ func (s *Server) CreateResponseStream(req *llmv1.CreateResponseStreamRequest, st
 	if _, err := identity.FromContext(stream.Context()); err != nil {
 		return err
 	}
-	organizationID := uuid.Nil
 
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
@@ -385,7 +383,7 @@ func (s *Server) CreateResponseStream(req *llmv1.CreateResponseStreamRequest, st
 		return status.Error(codes.InvalidArgument, "body is required")
 	}
 
-	resp, err := s.proxy.CreateResponseStream(stream.Context(), organizationID, modelID, req.GetBody())
+	resp, err := s.proxy.CreateResponseStream(stream.Context(), modelID, req.GetBody())
 	if err != nil {
 		return toStatusError(err)
 	}
