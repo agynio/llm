@@ -40,7 +40,6 @@ type ProviderWithToken struct {
 }
 
 type CreateInput struct {
-	TenantID   uuid.UUID
 	Endpoint   string
 	AuthMethod AuthMethod
 	Token      string
@@ -48,7 +47,6 @@ type CreateInput struct {
 
 type UpdateInput struct {
 	ID         uuid.UUID
-	TenantID   uuid.UUID
 	Endpoint   *string
 	AuthMethod *AuthMethod
 	Token      *string

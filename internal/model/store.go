@@ -28,7 +28,6 @@ type Model struct {
 }
 
 type CreateInput struct {
-	TenantID   uuid.UUID
 	Name       string
 	ProviderID uuid.UUID
 	RemoteName string
@@ -36,7 +35,6 @@ type CreateInput struct {
 
 type UpdateInput struct {
 	ID         uuid.UUID
-	TenantID   uuid.UUID
 	Name       *string
 	ProviderID *uuid.UUID
 	RemoteName *string

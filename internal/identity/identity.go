@@ -19,7 +19,7 @@ const (
 
 type Identity struct {
 	TenantID     uuid.UUID
-	IdentityID   uuid.UUID
+	IdentityID   string
 	IdentityType string
 	AuthMethod   string
 }
@@ -34,7 +34,7 @@ func FromContext(ctx context.Context) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	identityID, err := parseUUID(md, identityIDKey, "identity id")
+	identityID, err := parseString(md, identityIDKey, "identity id")
 	if err != nil {
 		return Identity{}, err
 	}

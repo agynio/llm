@@ -322,11 +322,6 @@ func parseTenantID(header http.Header) (uuid.UUID, error) {
 	return parsed, nil
 }
 
-func parseRequestBody(body []byte) (uuid.UUID, bool, error) {
-	_, modelID, stream, err := parseRequestPayload(body)
-	return modelID, stream, err
-}
-
 func parseRequestPayload(body []byte) (map[string]any, uuid.UUID, bool, error) {
 	if len(body) == 0 {
 		return nil, uuid.UUID{}, false, fmt.Errorf("%w: body is empty", ErrInvalidBody)

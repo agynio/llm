@@ -12,11 +12,11 @@ import (
 
 func TestFromContext(t *testing.T) {
 	tenantID := uuid.MustParse("75b094d1-4bba-4b85-9472-5e2eecb9f9d6")
-	identityID := uuid.MustParse("e0b7a948-cdb7-4fd1-b691-ea6382d42cf4")
+	identityID := "user-123"
 
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		tenantIDKey, tenantID.String(),
-		identityIDKey, identityID.String(),
+		identityIDKey, identityID,
 		identityTypeKey, "user",
 		authMethodKey, "jwt",
 	))
@@ -48,7 +48,7 @@ func TestFromContextMissingMetadata(t *testing.T) {
 
 func TestFromContextMissingFields(t *testing.T) {
 	tenantID := uuid.MustParse("8882d0e1-24cb-4de0-9ab5-96cf8b8d4bf2")
-	identityID := uuid.MustParse("e1f99b91-0c20-4db0-9e5c-3a6f8a9d4c2c")
+	identityID := "svc-42"
 
 	cases := []struct {
 		name string
@@ -64,7 +64,7 @@ func TestFromContextMissingFields(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			md := metadata.Pairs(
 				tenantIDKey, tenantID.String(),
-				identityIDKey, identityID.String(),
+				identityIDKey, identityID,
 				identityTypeKey, "service",
 				authMethodKey, "token",
 			)
@@ -80,30 +80,16 @@ func TestFromContextMissingFields(t *testing.T) {
 }
 
 func TestFromContextInvalidUUID(t *testing.T) {
-	cases := []struct {
-		name  string
-		key   string
-		value string
-	}{
-		{name: "tenant id", key: tenantIDKey, value: "not-a-uuid"},
-		{name: "identity id", key: identityIDKey, value: "also-not"},
-	}
+	md := metadata.Pairs(
+		tenantIDKey, "not-a-uuid",
+		identityIDKey, "identity-99",
+		identityTypeKey, "user",
+		authMethodKey, "jwt",
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			md := metadata.Pairs(
-				tenantIDKey, "6900b04d-7a3f-46d2-8724-1f5ccfc3f3ce",
-				identityIDKey, "86dd122e-9842-42e9-8b2c-92f78b4d8f1b",
-				identityTypeKey, "user",
-				authMethodKey, "jwt",
-			)
-			md[tc.key] = []string{tc.value}
-			ctx := metadata.NewIncomingContext(context.Background(), md)
-
-			_, err := FromContext(ctx)
-			if status.Code(err) != codes.Unauthenticated {
-				t.Fatalf("expected unauthenticated, got %v", status.Code(err))
-			}
-		})
+	_, err := FromContext(ctx)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected unauthenticated, got %v", status.Code(err))
 	}
 }

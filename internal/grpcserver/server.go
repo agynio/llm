@@ -71,7 +71,6 @@ func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProv
 	}
 
 	created, err := s.providers.Create(ctx, tenantID, provider.CreateInput{
-		TenantID:   tenantID,
 		Endpoint:   endpoint,
 		AuthMethod: authMethod,
 		Token:      token,
@@ -113,7 +112,7 @@ func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProv
 		return nil, err
 	}
 
-	input := provider.UpdateInput{ID: id, TenantID: tenantID}
+	input := provider.UpdateInput{ID: id}
 	if req.Endpoint != nil {
 		endpoint := strings.TrimSpace(req.GetEndpoint())
 		if endpoint == "" {
@@ -220,7 +219,6 @@ func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest)
 	}
 
 	created, err := s.models.Create(ctx, tenantID, model.CreateInput{
-		TenantID:   tenantID,
 		Name:       name,
 		ProviderID: providerID,
 		RemoteName: remoteName,
@@ -261,7 +259,7 @@ func (s *Server) UpdateModel(ctx context.Context, req *llmv1.UpdateModelRequest)
 	if err != nil {
 		return nil, err
 	}
-	input := model.UpdateInput{ID: id, TenantID: tenantID}
+	input := model.UpdateInput{ID: id}
 
 	if req.Name != nil {
 		name := strings.TrimSpace(req.GetName())
