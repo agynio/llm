@@ -46,14 +46,13 @@ func TestGRPCConnectivity(t *testing.T) {
 
 	client := llmv1.NewLLMServiceClient(conn)
 	md := metadata.Pairs(
-		"x-agyn-tenant-id", uuid.MustParse("c0879bc3-996c-45ac-9b7d-5535f891a0e3").String(),
-		"x-agyn-identity-id", uuid.MustParse("85e1e2b5-2425-4b55-a2f4-42ca1d5d8e9b").String(),
-		"x-agyn-identity-type", "e2e",
-		"x-agyn-auth-method", "test",
+		"x-identity-id", uuid.MustParse("85e1e2b5-2425-4b55-a2f4-42ca1d5d8e9b").String(),
+		"x-identity-type", "e2e",
 	)
 	ctx = metadata.NewOutgoingContext(ctx, md)
+	organizationID := uuid.MustParse("c0879bc3-996c-45ac-9b7d-5535f891a0e3")
 
-	if _, err := client.ListLLMProviders(ctx, &llmv1.ListLLMProvidersRequest{}); err != nil {
+	if _, err := client.ListLLMProviders(ctx, &llmv1.ListLLMProvidersRequest{OrganizationId: organizationID.String()}); err != nil {
 		t.Fatalf("list llm providers: %v", err)
 	}
 }
