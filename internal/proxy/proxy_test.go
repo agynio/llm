@@ -14,14 +14,12 @@ import (
 )
 
 type fakeProviderStore struct {
-	provider     provider.ProviderWithToken
-	err          error
-	lastID       uuid.UUID
-	lastTenantID uuid.UUID
+	provider provider.ProviderWithToken
+	err      error
+	lastID   uuid.UUID
 }
 
-func (f *fakeProviderStore) GetWithToken(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (provider.ProviderWithToken, error) {
-	f.lastTenantID = tenantID
+func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error) {
 	f.lastID = id
 	if f.err != nil {
 		return provider.ProviderWithToken{}, f.err
@@ -30,14 +28,12 @@ func (f *fakeProviderStore) GetWithToken(ctx context.Context, tenantID uuid.UUID
 }
 
 type fakeModelStore struct {
-	model        model.Model
-	err          error
-	lastID       uuid.UUID
-	lastTenantID uuid.UUID
+	model  model.Model
+	err    error
+	lastID uuid.UUID
 }
 
-func (f *fakeModelStore) Get(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (model.Model, error) {
-	f.lastTenantID = tenantID
+func (f *fakeModelStore) Get(ctx context.Context, id uuid.UUID) (model.Model, error) {
 	f.lastID = id
 	if f.err != nil {
 		return model.Model{}, f.err
@@ -155,7 +151,7 @@ func TestReadSSEContextCanceled(t *testing.T) {
 }
 
 func TestResolverResolve(t *testing.T) {
-	tenantID := uuid.MustParse("fbf728c4-502b-4032-ad65-6c59189cd089")
+	organizationID := uuid.MustParse("fbf728c4-502b-4032-ad65-6c59189cd089")
 	modelID := uuid.MustParse("5e3d6e5b-907c-4c7b-b470-e8a2d4c9b7f9")
 	providerID := uuid.MustParse("63af7c73-8d62-4ce8-81b3-3713a55c9c27")
 	mdl := model.Model{ID: modelID, ProviderID: providerID}
@@ -165,7 +161,7 @@ func TestResolverResolve(t *testing.T) {
 	providerStore := &fakeProviderStore{provider: prov}
 	resolver := NewResolver(providerStore, modelStore)
 
-	resolved, err := resolver.Resolve(context.Background(), tenantID, modelID)
+	resolved, err := resolver.Resolve(context.Background(), organizationID, modelID)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -178,32 +174,26 @@ func TestResolverResolve(t *testing.T) {
 	if modelStore.lastID != modelID {
 		t.Fatalf("expected model lookup for %s, got %s", modelID, modelStore.lastID)
 	}
-	if modelStore.lastTenantID != tenantID {
-		t.Fatalf("expected model lookup tenant %s, got %s", tenantID, modelStore.lastTenantID)
-	}
 	if providerStore.lastID != providerID {
 		t.Fatalf("expected provider lookup for %s, got %s", providerID, providerStore.lastID)
-	}
-	if providerStore.lastTenantID != tenantID {
-		t.Fatalf("expected provider lookup tenant %s, got %s", tenantID, providerStore.lastTenantID)
 	}
 }
 
 func TestResolverResolveErrors(t *testing.T) {
-	tenantID := uuid.MustParse("184edc0b-1b4a-4a01-9425-a702a3970031")
+	organizationID := uuid.MustParse("184edc0b-1b4a-4a01-9425-a702a3970031")
 	modelID := uuid.MustParse("8f556852-d99a-41a9-83ef-3ef053f048fe")
 	providerID := uuid.MustParse("8f6cdcad-8e14-4d67-89e2-75462e493f46")
 
 	modelStore := &fakeModelStore{err: model.ErrModelNotFound}
 	resolver := NewResolver(&fakeProviderStore{}, modelStore)
-	if _, err := resolver.Resolve(context.Background(), tenantID, modelID); !errors.Is(err, model.ErrModelNotFound) {
+	if _, err := resolver.Resolve(context.Background(), organizationID, modelID); !errors.Is(err, model.ErrModelNotFound) {
 		t.Fatalf("expected model not found, got %v", err)
 	}
 
 	modelStore = &fakeModelStore{model: model.Model{ID: modelID, ProviderID: providerID}}
 	providerStore := &fakeProviderStore{err: provider.ErrProviderNotFound}
 	resolver = NewResolver(providerStore, modelStore)
-	if _, err := resolver.Resolve(context.Background(), tenantID, modelID); !errors.Is(err, provider.ErrProviderNotFound) {
+	if _, err := resolver.Resolve(context.Background(), organizationID, modelID); !errors.Is(err, provider.ErrProviderNotFound) {
 		t.Fatalf("expected provider not found, got %v", err)
 	}
 }
@@ -233,14 +223,14 @@ func TestUpdateRequestPayloadRoundTrip(t *testing.T) {
 	}
 }
 func TestResolverResolveTimeFields(t *testing.T) {
-	tenantID := uuid.MustParse("d922a2b1-2f4e-4f25-adb0-b480be89b7c2")
+	organizationID := uuid.MustParse("d922a2b1-2f4e-4f25-adb0-b480be89b7c2")
 	modelID := uuid.MustParse("65563f15-6e3f-4c7b-86b9-dae97d9b4d2a")
 	providerID := uuid.MustParse("e8b2293a-3a2e-4693-8a94-9bcf1b7d5d42")
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	modelStore := &fakeModelStore{model: model.Model{ID: modelID, ProviderID: providerID, CreatedAt: created}}
 	providerStore := &fakeProviderStore{provider: provider.ProviderWithToken{Provider: provider.Provider{ID: providerID}}}
 	resolver := NewResolver(providerStore, modelStore)
-	resolved, err := resolver.Resolve(context.Background(), tenantID, modelID)
+	resolved, err := resolver.Resolve(context.Background(), organizationID, modelID)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

@@ -19,24 +19,24 @@ import (
 )
 
 type ProviderStore interface {
-	Create(ctx context.Context, tenantID uuid.UUID, input provider.CreateInput) (provider.Provider, error)
-	Get(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (provider.Provider, error)
-	Update(ctx context.Context, tenantID uuid.UUID, input provider.UpdateInput) (provider.Provider, error)
-	Delete(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error
-	List(ctx context.Context, tenantID uuid.UUID, pageSize int32, cursor *provider.PageCursor) (provider.ListResult, error)
+	Create(ctx context.Context, input provider.CreateInput) (provider.Provider, error)
+	Get(ctx context.Context, id uuid.UUID) (provider.Provider, error)
+	Update(ctx context.Context, input provider.UpdateInput) (provider.Provider, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+	List(ctx context.Context, organizationID uuid.UUID, pageSize int32, cursor *provider.PageCursor) (provider.ListResult, error)
 }
 
 type ModelStore interface {
-	Create(ctx context.Context, tenantID uuid.UUID, input model.CreateInput) (model.Model, error)
-	Get(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (model.Model, error)
-	Update(ctx context.Context, tenantID uuid.UUID, input model.UpdateInput) (model.Model, error)
-	Delete(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error
-	List(ctx context.Context, tenantID uuid.UUID, filter model.ListFilter, pageSize int32, cursor *model.PageCursor) (model.ListResult, error)
+	Create(ctx context.Context, input model.CreateInput) (model.Model, error)
+	Get(ctx context.Context, id uuid.UUID) (model.Model, error)
+	Update(ctx context.Context, input model.UpdateInput) (model.Model, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+	List(ctx context.Context, organizationID uuid.UUID, filter model.ListFilter, pageSize int32, cursor *model.PageCursor) (model.ListResult, error)
 }
 
 type Proxy interface {
-	CreateResponse(ctx context.Context, tenantID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.Response, error)
-	CreateResponseStream(ctx context.Context, tenantID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error)
+	CreateResponse(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.Response, error)
+	CreateResponseStream(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error)
 }
 
 type Server struct {
@@ -51,11 +51,10 @@ func New(providers ProviderStore, models ModelStore, proxyClient Proxy) *Server 
 }
 
 func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProviderRequest) (*llmv1.CreateLLMProviderResponse, error) {
-	caller, err := identity.FromContext(ctx)
+	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	endpoint := strings.TrimSpace(req.GetEndpoint())
 	if endpoint == "" {
@@ -70,10 +69,11 @@ func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProv
 		return nil, err
 	}
 
-	created, err := s.providers.Create(ctx, tenantID, provider.CreateInput{
-		Endpoint:   endpoint,
-		AuthMethod: authMethod,
-		Token:      token,
+	created, err := s.providers.Create(ctx, provider.CreateInput{
+		OrganizationID: organizationID,
+		Endpoint:       endpoint,
+		AuthMethod:     authMethod,
+		Token:          token,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
@@ -83,17 +83,15 @@ func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProv
 }
 
 func (s *Server) GetLLMProvider(ctx context.Context, req *llmv1.GetLLMProviderRequest) (*llmv1.GetLLMProviderResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
 		return nil, err
 	}
-	prov, err := s.providers.Get(ctx, tenantID, id)
+	prov, err := s.providers.Get(ctx, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -101,11 +99,9 @@ func (s *Server) GetLLMProvider(ctx context.Context, req *llmv1.GetLLMProviderRe
 }
 
 func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProviderRequest) (*llmv1.UpdateLLMProviderResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
@@ -135,7 +131,7 @@ func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProv
 		input.Token = &token
 	}
 
-	updated, err := s.providers.Update(ctx, tenantID, input)
+	updated, err := s.providers.Update(ctx, input)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -144,28 +140,25 @@ func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProv
 }
 
 func (s *Server) DeleteLLMProvider(ctx context.Context, req *llmv1.DeleteLLMProviderRequest) (*llmv1.DeleteLLMProviderResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
 		return nil, err
 	}
-	if err := s.providers.Delete(ctx, tenantID, id); err != nil {
+	if err := s.providers.Delete(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &llmv1.DeleteLLMProviderResponse{}, nil
 }
 
 func (s *Server) ListLLMProviders(ctx context.Context, req *llmv1.ListLLMProvidersRequest) (*llmv1.ListLLMProvidersResponse, error) {
-	caller, err := identity.FromContext(ctx)
+	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	var cursor *provider.PageCursor
 	if req.GetPageToken() != "" {
@@ -176,7 +169,7 @@ func (s *Server) ListLLMProviders(ctx context.Context, req *llmv1.ListLLMProvide
 		cursor = &decoded
 	}
 
-	result, err := s.providers.List(ctx, tenantID, req.GetPageSize(), cursor)
+	result, err := s.providers.List(ctx, organizationID, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -199,11 +192,10 @@ func (s *Server) ListLLMProviders(ctx context.Context, req *llmv1.ListLLMProvide
 }
 
 func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest) (*llmv1.CreateModelResponse, error) {
-	caller, err := identity.FromContext(ctx)
+	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	name := strings.TrimSpace(req.GetName())
 	if name == "" {
@@ -218,10 +210,11 @@ func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest)
 		return nil, status.Error(codes.InvalidArgument, "remote_name is required")
 	}
 
-	created, err := s.models.Create(ctx, tenantID, model.CreateInput{
-		Name:       name,
-		ProviderID: providerID,
-		RemoteName: remoteName,
+	created, err := s.models.Create(ctx, model.CreateInput{
+		OrganizationID: organizationID,
+		Name:           name,
+		ProviderID:     providerID,
+		RemoteName:     remoteName,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
@@ -231,17 +224,15 @@ func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest)
 }
 
 func (s *Server) GetModel(ctx context.Context, req *llmv1.GetModelRequest) (*llmv1.GetModelResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
 		return nil, err
 	}
-	mdl, err := s.models.Get(ctx, tenantID, id)
+	mdl, err := s.models.Get(ctx, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -249,11 +240,9 @@ func (s *Server) GetModel(ctx context.Context, req *llmv1.GetModelRequest) (*llm
 }
 
 func (s *Server) UpdateModel(ctx context.Context, req *llmv1.UpdateModelRequest) (*llmv1.UpdateModelResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
@@ -283,7 +272,7 @@ func (s *Server) UpdateModel(ctx context.Context, req *llmv1.UpdateModelRequest)
 		input.RemoteName = &remoteName
 	}
 
-	updated, err := s.models.Update(ctx, tenantID, input)
+	updated, err := s.models.Update(ctx, input)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -291,28 +280,25 @@ func (s *Server) UpdateModel(ctx context.Context, req *llmv1.UpdateModelRequest)
 }
 
 func (s *Server) DeleteModel(ctx context.Context, req *llmv1.DeleteModelRequest) (*llmv1.DeleteModelResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
 		return nil, err
 	}
-	if err := s.models.Delete(ctx, tenantID, id); err != nil {
+	if err := s.models.Delete(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &llmv1.DeleteModelResponse{}, nil
 }
 
 func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (*llmv1.ListModelsResponse, error) {
-	caller, err := identity.FromContext(ctx)
+	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
 
 	filter := model.ListFilter{}
 	if req.GetLlmProviderId() != "" {
@@ -339,7 +325,7 @@ func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (
 		}
 	}
 
-	result, err := s.models.List(ctx, tenantID, filter, req.GetPageSize(), cursor)
+	result, err := s.models.List(ctx, organizationID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -362,11 +348,10 @@ func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (
 }
 
 func (s *Server) CreateResponse(ctx context.Context, req *llmv1.CreateResponseRequest) (*llmv1.CreateResponseResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
+	if _, err := identity.FromContext(ctx); err != nil {
 		return nil, err
 	}
-	tenantID := caller.TenantID
+	organizationID := uuid.Nil
 
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
@@ -376,7 +361,7 @@ func (s *Server) CreateResponse(ctx context.Context, req *llmv1.CreateResponseRe
 		return nil, status.Error(codes.InvalidArgument, "body is required")
 	}
 
-	resp, err := s.proxy.CreateResponse(ctx, tenantID, modelID, req.GetBody())
+	resp, err := s.proxy.CreateResponse(ctx, organizationID, modelID, req.GetBody())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -387,11 +372,10 @@ func (s *Server) CreateResponse(ctx context.Context, req *llmv1.CreateResponseRe
 }
 
 func (s *Server) CreateResponseStream(req *llmv1.CreateResponseStreamRequest, stream llmv1.LLMService_CreateResponseStreamServer) error {
-	caller, err := identity.FromContext(stream.Context())
-	if err != nil {
+	if _, err := identity.FromContext(stream.Context()); err != nil {
 		return err
 	}
-	tenantID := caller.TenantID
+	organizationID := uuid.Nil
 
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
@@ -401,7 +385,7 @@ func (s *Server) CreateResponseStream(req *llmv1.CreateResponseStreamRequest, st
 		return status.Error(codes.InvalidArgument, "body is required")
 	}
 
-	resp, err := s.proxy.CreateResponseStream(stream.Context(), tenantID, modelID, req.GetBody())
+	resp, err := s.proxy.CreateResponseStream(stream.Context(), organizationID, modelID, req.GetBody())
 	if err != nil {
 		return toStatusError(err)
 	}

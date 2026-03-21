@@ -1,0 +1,5 @@
+ALTER TABLE llm_providers RENAME COLUMN tenant_id TO organization_id;
+ALTER TABLE models RENAME COLUMN tenant_id TO organization_id;
+ALTER INDEX idx_llm_providers_tenant_created RENAME TO idx_llm_providers_organization_created;
+ALTER INDEX idx_models_tenant_created RENAME TO idx_models_organization_created;
+ALTER INDEX idx_models_tenant_provider_created RENAME TO idx_models_organization_provider_created;
