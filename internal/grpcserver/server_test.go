@@ -3,9 +3,6 @@ package grpcserver
 import (
 	"context"
 	"errors"
-	"io"
-	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +10,6 @@ import (
 	"github.com/agynio/llm/internal/identity"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
-	"github.com/agynio/llm/internal/proxy"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -33,10 +29,6 @@ func TestToStatusErrorMappings(t *testing.T) {
 		{name: "provider in use", err: provider.ErrProviderInUse, code: codes.FailedPrecondition},
 		{name: "no provider fields", err: provider.ErrNoFieldsToUpdate, code: codes.InvalidArgument},
 		{name: "no model fields", err: model.ErrNoFieldsToUpdate, code: codes.InvalidArgument},
-		{name: "invalid body", err: proxy.ErrInvalidBody, code: codes.InvalidArgument},
-		{name: "missing model", err: proxy.ErrMissingModel, code: codes.InvalidArgument},
-		{name: "unsupported auth", err: proxy.ErrUnsupportedAuthMethod, code: codes.FailedPrecondition},
-		{name: "missing token", err: proxy.ErrMissingToken, code: codes.FailedPrecondition},
 		{name: "fallback", err: errors.New("boom"), code: codes.Internal},
 	}
 
@@ -54,6 +46,8 @@ type fakeProviderStore struct {
 	createOrganizationID uuid.UUID
 	listOrganizationID   uuid.UUID
 	getID                uuid.UUID
+	getWithTokenID       uuid.UUID
+	getWithTokenOrgID    uuid.UUID
 	updateID             uuid.UUID
 	deleteID             uuid.UUID
 }
@@ -75,6 +69,21 @@ func (f *fakeProviderStore) Get(ctx context.Context, id uuid.UUID) (provider.Pro
 	return provider.Provider{ID: id, OrganizationID: uuid.Nil, Endpoint: "https://example.com", AuthMethod: provider.AuthMethodBearer, CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
 }
 
+func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error) {
+	f.getWithTokenID = id
+	return provider.ProviderWithToken{
+		Provider: provider.Provider{
+			ID:             id,
+			OrganizationID: f.getWithTokenOrgID,
+			Endpoint:       "https://example.com",
+			AuthMethod:     provider.AuthMethodBearer,
+			CreatedAt:      time.Unix(0, 0),
+			UpdatedAt:      time.Unix(0, 0),
+		},
+		Token: "token",
+	}, nil
+}
+
 func (f *fakeProviderStore) Update(ctx context.Context, input provider.UpdateInput) (provider.Provider, error) {
 	f.updateID = input.ID
 	return provider.Provider{ID: input.ID, OrganizationID: uuid.Nil, Endpoint: "https://example.com", AuthMethod: provider.AuthMethodBearer, CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
@@ -94,6 +103,7 @@ type fakeModelStore struct {
 	createOrganizationID uuid.UUID
 	listOrganizationID   uuid.UUID
 	getID                uuid.UUID
+	getModel             model.Model
 	updateID             uuid.UUID
 	deleteID             uuid.UUID
 }
@@ -105,6 +115,13 @@ func (f *fakeModelStore) Create(ctx context.Context, input model.CreateInput) (m
 
 func (f *fakeModelStore) Get(ctx context.Context, id uuid.UUID) (model.Model, error) {
 	f.getID = id
+	if f.getModel.ID != uuid.Nil || f.getModel.ProviderID != uuid.Nil || f.getModel.RemoteName != "" || f.getModel.OrganizationID != uuid.Nil {
+		mdl := f.getModel
+		if mdl.ID == uuid.Nil {
+			mdl.ID = id
+		}
+		return mdl, nil
+	}
 	return model.Model{ID: id, OrganizationID: uuid.Nil, Name: "model", ProviderID: uuid.MustParse("3ef53c23-7d5e-4ca8-8d1a-5df6cbdedce2"), RemoteName: "remote", CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
 }
 
@@ -123,53 +140,6 @@ func (f *fakeModelStore) List(ctx context.Context, organizationID uuid.UUID, fil
 	return model.ListResult{Models: []model.Model{}}, nil
 }
 
-type fakeProxy struct {
-	createModelID       uuid.UUID
-	createStreamModelID uuid.UUID
-}
-
-func (f *fakeProxy) CreateResponse(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.Response, error) {
-	f.createModelID = modelID
-	return proxy.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: []byte("ok")}, nil
-}
-
-func (f *fakeProxy) CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error) {
-	f.createStreamModelID = modelID
-	return proxy.StreamResponse{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("data: hello\n\n"))}, nil
-}
-
-type fakeResponseStream struct {
-	ctx    context.Context
-	events []*llmv1.CreateResponseStreamResponse
-}
-
-func (f *fakeResponseStream) Send(resp *llmv1.CreateResponseStreamResponse) error {
-	f.events = append(f.events, resp)
-	return nil
-}
-
-func (f *fakeResponseStream) SetHeader(metadata.MD) error {
-	return nil
-}
-
-func (f *fakeResponseStream) SendHeader(metadata.MD) error {
-	return nil
-}
-
-func (f *fakeResponseStream) SetTrailer(metadata.MD) {}
-
-func (f *fakeResponseStream) Context() context.Context {
-	return f.ctx
-}
-
-func (f *fakeResponseStream) SendMsg(m any) error {
-	return nil
-}
-
-func (f *fakeResponseStream) RecvMsg(m any) error {
-	return nil
-}
-
 func contextWithIdentity() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		identity.MetadataKeyIdentityID, "identity-1",
@@ -180,7 +150,7 @@ func contextWithIdentity() context.Context {
 func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("f79b0bde-9e46-44c0-9756-9eac9f383acd")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{}, &fakeProxy{})
+	server := New(providers, &fakeModelStore{})
 
 	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
 		Endpoint:       "https://example.com",
@@ -199,7 +169,7 @@ func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 func TestGetLLMProviderUsesID(t *testing.T) {
 	providerID := uuid.MustParse("b2910fd9-9f3b-4f31-9c3b-369b3a2040e0")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{}, &fakeProxy{})
+	server := New(providers, &fakeModelStore{})
 
 	_, err := server.GetLLMProvider(contextWithIdentity(), &llmv1.GetLLMProviderRequest{Id: providerID.String()})
 	if err != nil {
@@ -213,7 +183,7 @@ func TestGetLLMProviderUsesID(t *testing.T) {
 func TestUpdateLLMProviderUsesID(t *testing.T) {
 	providerID := uuid.MustParse("56a4b7e4-3954-4f85-9df2-b0b2371c91f8")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{}, &fakeProxy{})
+	server := New(providers, &fakeModelStore{})
 	endpoint := "https://update.example.com"
 
 	_, err := server.UpdateLLMProvider(contextWithIdentity(), &llmv1.UpdateLLMProviderRequest{
@@ -231,7 +201,7 @@ func TestUpdateLLMProviderUsesID(t *testing.T) {
 func TestDeleteLLMProviderUsesID(t *testing.T) {
 	providerID := uuid.MustParse("0ea4b5b9-7fe0-4e1f-b1a1-a4b9f71001d5")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{}, &fakeProxy{})
+	server := New(providers, &fakeModelStore{})
 
 	_, err := server.DeleteLLMProvider(contextWithIdentity(), &llmv1.DeleteLLMProviderRequest{Id: providerID.String()})
 	if err != nil {
@@ -245,7 +215,7 @@ func TestDeleteLLMProviderUsesID(t *testing.T) {
 func TestListLLMProvidersUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("22cb0675-4c69-4aa6-a41f-44cde1d2b0f4")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{}, &fakeProxy{})
+	server := New(providers, &fakeModelStore{})
 
 	_, err := server.ListLLMProviders(context.Background(), &llmv1.ListLLMProvidersRequest{PageSize: 5, OrganizationId: organizationID.String()})
 	if err != nil {
@@ -259,7 +229,7 @@ func TestListLLMProvidersUsesOrganizationID(t *testing.T) {
 func TestCreateModelUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("6d68256e-4f2a-4d20-9f2b-8e93b5c09a4b")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models, &fakeProxy{})
+	server := New(&fakeProviderStore{}, models)
 
 	_, err := server.CreateModel(context.Background(), &llmv1.CreateModelRequest{
 		Name:           "name",
@@ -278,7 +248,7 @@ func TestCreateModelUsesOrganizationID(t *testing.T) {
 func TestGetModelUsesID(t *testing.T) {
 	modelID := uuid.MustParse("64b7b95d-1d57-4a95-8a13-2fdc7d4e5408")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models, &fakeProxy{})
+	server := New(&fakeProviderStore{}, models)
 
 	_, err := server.GetModel(contextWithIdentity(), &llmv1.GetModelRequest{Id: modelID.String()})
 	if err != nil {
@@ -292,7 +262,7 @@ func TestGetModelUsesID(t *testing.T) {
 func TestUpdateModelUsesID(t *testing.T) {
 	modelID := uuid.MustParse("534d5726-ecb8-4d47-967b-8a337df56c52")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models, &fakeProxy{})
+	server := New(&fakeProviderStore{}, models)
 	name := "updated"
 
 	_, err := server.UpdateModel(contextWithIdentity(), &llmv1.UpdateModelRequest{
@@ -310,7 +280,7 @@ func TestUpdateModelUsesID(t *testing.T) {
 func TestDeleteModelUsesID(t *testing.T) {
 	modelID := uuid.MustParse("da8c9c3a-8791-4d9f-a73f-83f31138dc28")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models, &fakeProxy{})
+	server := New(&fakeProviderStore{}, models)
 
 	_, err := server.DeleteModel(contextWithIdentity(), &llmv1.DeleteModelRequest{Id: modelID.String()})
 	if err != nil {
@@ -324,7 +294,7 @@ func TestDeleteModelUsesID(t *testing.T) {
 func TestListModelsUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("0f42fd48-4d3e-4382-b787-6e681d8b82a0")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models, &fakeProxy{})
+	server := New(&fakeProviderStore{}, models)
 
 	_, err := server.ListModels(context.Background(), &llmv1.ListModelsRequest{PageSize: 5, OrganizationId: organizationID.String()})
 	if err != nil {
@@ -335,32 +305,34 @@ func TestListModelsUsesOrganizationID(t *testing.T) {
 	}
 }
 
-func TestCreateResponseUsesModelID(t *testing.T) {
-	proxyClient := &fakeProxy{}
-	server := New(&fakeProviderStore{}, &fakeModelStore{}, proxyClient)
-	modelID := uuid.MustParse("f5d90ff0-9f4a-4c75-a23c-770a041ce5f5")
+func TestResolveModelReturnsProviderDetails(t *testing.T) {
+	modelID := uuid.MustParse("6e1a1a68-1e0f-4b07-8362-0a22e4c6bb86")
+	providerID := uuid.MustParse("3a6f3fb1-6372-4c30-bf34-0ff24511d9c0")
+	organizationID := uuid.MustParse("d65d0b42-33a1-45ac-a025-78f9117c3468")
+	providers := &fakeProviderStore{getWithTokenOrgID: organizationID}
+	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote", OrganizationID: organizationID, Name: "model"}}
+	server := New(providers, models)
 
-	_, err := server.CreateResponse(contextWithIdentity(), &llmv1.CreateResponseRequest{ModelId: modelID.String(), Body: []byte("body")})
+	resp, err := server.ResolveModel(context.Background(), &llmv1.ResolveModelRequest{ModelId: modelID.String()})
 	if err != nil {
-		t.Fatalf("CreateResponse: %v", err)
+		t.Fatalf("ResolveModel: %v", err)
 	}
-	if proxyClient.createModelID != modelID {
-		t.Fatalf("expected model id %s, got %s", modelID, proxyClient.createModelID)
+	if models.getID != modelID {
+		t.Fatalf("expected model id %s, got %s", modelID, models.getID)
 	}
-}
-
-func TestCreateResponseStreamUsesModelID(t *testing.T) {
-	proxyClient := &fakeProxy{}
-	server := New(&fakeProviderStore{}, &fakeModelStore{}, proxyClient)
-	modelID := uuid.MustParse("64b0bc5b-9c5f-4174-8aa6-02f1aa9d4ad8")
-	ctx := contextWithIdentity()
-	stream := &fakeResponseStream{ctx: ctx}
-
-	err := server.CreateResponseStream(&llmv1.CreateResponseStreamRequest{ModelId: modelID.String(), Body: []byte("body")}, stream)
-	if err != nil {
-		t.Fatalf("CreateResponseStream: %v", err)
+	if providers.getWithTokenID != providerID {
+		t.Fatalf("expected provider id %s, got %s", providerID, providers.getWithTokenID)
 	}
-	if proxyClient.createStreamModelID != modelID {
-		t.Fatalf("expected model id %s, got %s", modelID, proxyClient.createStreamModelID)
+	if resp.Endpoint != "https://example.com" {
+		t.Fatalf("expected endpoint https://example.com, got %s", resp.Endpoint)
+	}
+	if resp.Token != "token" {
+		t.Fatalf("expected token token, got %s", resp.Token)
+	}
+	if resp.RemoteName != "remote" {
+		t.Fatalf("expected remote name remote, got %s", resp.RemoteName)
+	}
+	if resp.OrganizationId != organizationID.String() {
+		t.Fatalf("expected organization %s, got %s", organizationID, resp.OrganizationId)
 	}
 }

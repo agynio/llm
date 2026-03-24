@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/identity"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
-	"github.com/agynio/llm/internal/proxy"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -21,6 +19,7 @@ import (
 type ProviderStore interface {
 	Create(ctx context.Context, input provider.CreateInput) (provider.Provider, error)
 	Get(ctx context.Context, id uuid.UUID) (provider.Provider, error)
+	GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error)
 	Update(ctx context.Context, input provider.UpdateInput) (provider.Provider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, organizationID uuid.UUID, pageSize int32, cursor *provider.PageCursor) (provider.ListResult, error)
@@ -34,20 +33,14 @@ type ModelStore interface {
 	List(ctx context.Context, organizationID uuid.UUID, filter model.ListFilter, pageSize int32, cursor *model.PageCursor) (model.ListResult, error)
 }
 
-type Proxy interface {
-	CreateResponse(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.Response, error)
-	CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (proxy.StreamResponse, error)
-}
-
 type Server struct {
 	llmv1.UnimplementedLLMServiceServer
 	providers ProviderStore
 	models    ModelStore
-	proxy     Proxy
 }
 
-func New(providers ProviderStore, models ModelStore, proxyClient Proxy) *Server {
-	return &Server{providers: providers, models: models, proxy: proxyClient}
+func New(providers ProviderStore, models ModelStore) *Server {
+	return &Server{providers: providers, models: models}
 }
 
 func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProviderRequest) (*llmv1.CreateLLMProviderResponse, error) {
@@ -347,62 +340,28 @@ func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (
 	return resp, nil
 }
 
-func (s *Server) CreateResponse(ctx context.Context, req *llmv1.CreateResponseRequest) (*llmv1.CreateResponseResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
-		return nil, err
-	}
-
+func (s *Server) ResolveModel(ctx context.Context, req *llmv1.ResolveModelRequest) (*llmv1.ResolveModelResponse, error) {
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
 		return nil, err
 	}
-	if len(req.GetBody()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "body is required")
-	}
 
-	resp, err := s.proxy.CreateResponse(ctx, modelID, req.GetBody())
+	mdl, err := s.models.Get(ctx, modelID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, status.Errorf(codes.Internal, "provider response status %d: %s", resp.StatusCode, strings.TrimSpace(string(resp.Body)))
-	}
-	return &llmv1.CreateResponseResponse{Body: resp.Body}, nil
-}
 
-func (s *Server) CreateResponseStream(req *llmv1.CreateResponseStreamRequest, stream llmv1.LLMService_CreateResponseStreamServer) error {
-	if _, err := identity.FromContext(stream.Context()); err != nil {
-		return err
-	}
-
-	modelID, err := parseUUID(req.GetModelId(), "model_id")
+	prov, err := s.providers.GetWithToken(ctx, mdl.ProviderID)
 	if err != nil {
-		return err
-	}
-	if len(req.GetBody()) == 0 {
-		return status.Error(codes.InvalidArgument, "body is required")
+		return nil, toStatusError(err)
 	}
 
-	resp, err := s.proxy.CreateResponseStream(stream.Context(), modelID, req.GetBody())
-	if err != nil {
-		return toStatusError(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return status.Errorf(codes.Internal, "provider response status %d", resp.StatusCode)
-		}
-		return status.Errorf(codes.Internal, "provider response status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	return proxy.ReadSSE(stream.Context(), resp.Body, func(event proxy.Event) error {
-		return stream.Send(&llmv1.CreateResponseStreamResponse{
-			EventType: event.EventType,
-			Data:      event.Data,
-		})
-	})
+	return &llmv1.ResolveModelResponse{
+		Endpoint:       prov.Endpoint,
+		Token:          prov.Token,
+		RemoteName:     mdl.RemoteName,
+		OrganizationId: prov.OrganizationID.String(),
+	}, nil
 }
 
 func parseUUID(value string, field string) (uuid.UUID, error) {
@@ -438,8 +397,9 @@ func toProtoProvider(prov provider.Provider) *llmv1.LLMProvider {
 			CreatedAt: timestamppb.New(prov.CreatedAt),
 			UpdatedAt: timestamppb.New(prov.UpdatedAt),
 		},
-		Endpoint:   prov.Endpoint,
-		AuthMethod: toProtoAuthMethod(prov.AuthMethod),
+		Endpoint:       prov.Endpoint,
+		AuthMethod:     toProtoAuthMethod(prov.AuthMethod),
+		OrganizationId: prov.OrganizationID.String(),
 	}
 }
 
@@ -476,12 +436,6 @@ func toStatusError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if errors.Is(err, provider.ErrProviderInUse) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, proxy.ErrInvalidBody) || errors.Is(err, proxy.ErrMissingModel) {
-		return status.Error(codes.InvalidArgument, err.Error())
-	}
-	if errors.Is(err, proxy.ErrUnsupportedAuthMethod) || errors.Is(err, proxy.ErrMissingToken) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
