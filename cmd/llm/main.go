@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,7 +17,6 @@ import (
 	"github.com/agynio/llm/internal/grpcserver"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
-	"github.com/agynio/llm/internal/proxy"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -58,27 +56,20 @@ func run() error {
 
 	providerStore := provider.NewStore(pool)
 	modelStore := model.NewStore(pool)
-	resolver := proxy.NewResolver(providerStore, modelStore)
-	proxyService := proxy.NewService(resolver, &http.Client{})
 
 	grpcServer := grpc.NewServer()
 	healthServer := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus("agynio.api.llm.v1.LLMService", healthpb.HealthCheckResponse_SERVING)
-	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, proxyService))
+	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore))
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.GRPCAddress, err)
 	}
 
-	httpServer := &http.Server{
-		Addr:    cfg.HTTPAddress,
-		Handler: proxy.NewHandler(proxyService),
-	}
-
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("LLM gRPC listening on %s", cfg.GRPCAddress)
 		if err := grpcServer.Serve(grpcListener); err != nil {
@@ -86,16 +77,6 @@ func run() error {
 				return
 			}
 			errCh <- fmt.Errorf("serve grpc: %w", err)
-		}
-	}()
-
-	go func() {
-		log.Printf("LLM HTTP listening on %s", cfg.HTTPAddress)
-		if err := httpServer.ListenAndServe(); err != nil {
-			if errors.Is(err, http.ErrServerClosed) {
-				return
-			}
-			errCh <- fmt.Errorf("serve http: %w", err)
 		}
 	}()
 
@@ -107,10 +88,6 @@ func run() error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown http: %w", err)
-	}
 
 	healthServer.Shutdown()
 	grpcDone := make(chan struct{})

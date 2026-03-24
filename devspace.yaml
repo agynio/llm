@@ -181,7 +181,6 @@ dev:
           lastLines: 200
     ports:
       - port: "50051"
-      - port: "8080"
 
   e2e-runner:
     namespace: ${LLM_NAMESPACE}
