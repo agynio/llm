@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -72,57 +71,37 @@ type StreamResponse struct {
 	Body       io.ReadCloser
 }
 
-type Service struct {
-	resolver *Resolver
-	client   *http.Client
+type Doer interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
-func NewService(resolver *Resolver, client *http.Client) *Service {
+type Service struct {
+	resolver *Resolver
+	client   Doer
+}
+
+func NewService(resolver *Resolver, client Doer) *Service {
 	return &Service{resolver: resolver, client: client}
 }
 
-func (s *Service) CreateResponse(ctx context.Context, modelID uuid.UUID, body []byte) (Response, error) {
+func (s *Service) createResponse(ctx context.Context, modelID uuid.UUID, body []byte) (Response, error) {
 	resolved, err := s.resolver.Resolve(ctx, modelID)
 	if err != nil {
 		return Response{}, err
 	}
-	updated, err := updateRequestBody(body, resolved.Model.RemoteName, false)
-	if err != nil {
-		return Response{}, err
-	}
-	return s.doRequest(ctx, resolved, updated)
-}
-
-func (s *Service) CreateResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (StreamResponse, error) {
-	resolved, err := s.resolver.Resolve(ctx, modelID)
-	if err != nil {
-		return StreamResponse{}, err
-	}
-	updated, err := updateRequestBody(body, resolved.Model.RemoteName, true)
-	if err != nil {
-		return StreamResponse{}, err
-	}
-	return s.doStreamRequest(ctx, resolved, updated)
-}
-
-func (s *Service) createResponseFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (Response, error) {
-	resolved, err := s.resolver.Resolve(ctx, modelID)
-	if err != nil {
-		return Response{}, err
-	}
-	updated, err := updateRequestPayload(payload, resolved.Model.RemoteName, false)
+	updated, err := rewriteRequestBody(body, resolved.Model.RemoteName, false)
 	if err != nil {
 		return Response{}, err
 	}
 	return s.doRequest(ctx, resolved, updated)
 }
 
-func (s *Service) createResponseStreamFromPayload(ctx context.Context, modelID uuid.UUID, payload map[string]any) (StreamResponse, error) {
+func (s *Service) createResponseStream(ctx context.Context, modelID uuid.UUID, body []byte) (StreamResponse, error) {
 	resolved, err := s.resolver.Resolve(ctx, modelID)
 	if err != nil {
 		return StreamResponse{}, err
 	}
-	updated, err := updateRequestPayload(payload, resolved.Model.RemoteName, true)
+	updated, err := rewriteRequestBody(body, resolved.Model.RemoteName, true)
 	if err != nil {
 		return StreamResponse{}, err
 	}
@@ -188,62 +167,6 @@ func (s *Service) buildRequest(ctx context.Context, resolved ResolvedModel, body
 	return req, nil
 }
 
-type Event struct {
-	EventType string
-	Data      []byte
-}
-
-func ReadSSE(ctx context.Context, reader io.Reader, handle func(Event) error) error {
-	bufReader := bufio.NewReader(reader)
-	var (
-		eventType string
-		dataLines []string
-	)
-
-	emit := func() error {
-		if len(dataLines) == 0 && eventType == "" {
-			return nil
-		}
-		data := strings.Join(dataLines, "\n")
-		return handle(Event{EventType: eventType, Data: []byte(data)})
-	}
-
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		line, err := bufReader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("read sse: %w", err)
-		}
-		line = strings.TrimRight(line, "\r\n")
-
-		switch {
-		case line == "":
-			if err := emit(); err != nil {
-				return err
-			}
-			eventType = ""
-			dataLines = dataLines[:0]
-		case strings.HasPrefix(line, "event:"):
-			eventType = strings.TrimSpace(line[len("event:"):])
-		case strings.HasPrefix(line, "data:"):
-			data := strings.TrimLeft(line[len("data:"):], " ")
-			dataLines = append(dataLines, data)
-		default:
-		}
-
-		if errors.Is(err, io.EOF) {
-			break
-		}
-	}
-
-	if err := emit(); err != nil {
-		return err
-	}
-	return nil
-}
-
 type Handler struct {
 	service *Service
 }
@@ -269,14 +192,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-	payload, modelID, stream, err := parseRequestPayload(body)
+	modelID, stream, err := parseRequestPayload(body)
 	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
 
 	if stream {
-		resp, err := h.service.createResponseStreamFromPayload(r.Context(), modelID, payload)
+		resp, err := h.service.createResponseStream(r.Context(), modelID, body)
 		if err != nil {
 			writeProxyError(w, err)
 			return
@@ -295,7 +218,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.service.createResponseFromPayload(r.Context(), modelID, payload)
+	resp, err := h.service.createResponse(r.Context(), modelID, body)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -305,46 +228,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.Body)
 }
 
-func parseRequestBody(body []byte) (uuid.UUID, bool, error) {
-	_, modelID, stream, err := parseRequestPayload(body)
-	return modelID, stream, err
-}
-
-func parseRequestPayload(body []byte) (map[string]any, uuid.UUID, bool, error) {
+func parseRequestPayload(body []byte) (uuid.UUID, bool, error) {
 	if len(body) == 0 {
-		return nil, uuid.UUID{}, false, fmt.Errorf("%w: body is empty", ErrInvalidBody)
+		return uuid.UUID{}, false, fmt.Errorf("%w: body is empty", ErrInvalidBody)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, uuid.UUID{}, false, fmt.Errorf("%w: %v", ErrInvalidBody, err)
+		return uuid.UUID{}, false, fmt.Errorf("%w: %v", ErrInvalidBody, err)
 	}
 
 	rawModel, ok := payload["model"]
 	if !ok {
-		return payload, uuid.UUID{}, false, ErrMissingModel
+		return uuid.UUID{}, false, ErrMissingModel
 	}
 	modelStr, ok := rawModel.(string)
 	if !ok || strings.TrimSpace(modelStr) == "" {
-		return payload, uuid.UUID{}, false, fmt.Errorf("%w: model must be a string", ErrInvalidBody)
+		return uuid.UUID{}, false, fmt.Errorf("%w: model must be a string", ErrInvalidBody)
 	}
 	modelID, err := uuid.Parse(modelStr)
 	if err != nil {
-		return payload, uuid.UUID{}, false, fmt.Errorf("%w: model must be a UUID", ErrInvalidBody)
+		return uuid.UUID{}, false, fmt.Errorf("%w: model must be a UUID", ErrInvalidBody)
 	}
 
 	stream := false
 	if rawStream, ok := payload["stream"]; ok {
 		value, ok := rawStream.(bool)
 		if !ok {
-			return payload, uuid.UUID{}, false, fmt.Errorf("%w: stream must be a boolean", ErrInvalidBody)
+			return uuid.UUID{}, false, fmt.Errorf("%w: stream must be a boolean", ErrInvalidBody)
 		}
 		stream = value
 	}
 
-	return payload, modelID, stream, nil
+	return modelID, stream, nil
 }
 
-func updateRequestBody(body []byte, remoteName string, forceStream bool) ([]byte, error) {
+func rewriteRequestBody(body []byte, remoteName string, forceStream bool) ([]byte, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("%w: body is empty", ErrInvalidBody)
 	}
@@ -352,10 +270,6 @@ func updateRequestBody(body []byte, remoteName string, forceStream bool) ([]byte
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidBody, err)
 	}
-	return updateRequestPayload(payload, remoteName, forceStream)
-}
-
-func updateRequestPayload(payload map[string]any, remoteName string, forceStream bool) ([]byte, error) {
 	payload["model"] = remoteName
 	if forceStream {
 		payload["stream"] = true
