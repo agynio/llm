@@ -48,6 +48,7 @@ type fakeProviderStore struct {
 	getID                uuid.UUID
 	getWithTokenID       uuid.UUID
 	getWithTokenOrgID    uuid.UUID
+	getWithTokenErr      error
 	updateID             uuid.UUID
 	deleteID             uuid.UUID
 }
@@ -71,6 +72,9 @@ func (f *fakeProviderStore) Get(ctx context.Context, id uuid.UUID) (provider.Pro
 
 func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error) {
 	f.getWithTokenID = id
+	if f.getWithTokenErr != nil {
+		return provider.ProviderWithToken{}, f.getWithTokenErr
+	}
 	return provider.ProviderWithToken{
 		Provider: provider.Provider{
 			ID:             id,
@@ -104,6 +108,7 @@ type fakeModelStore struct {
 	listOrganizationID   uuid.UUID
 	getID                uuid.UUID
 	getModel             model.Model
+	getErr               error
 	updateID             uuid.UUID
 	deleteID             uuid.UUID
 }
@@ -115,6 +120,9 @@ func (f *fakeModelStore) Create(ctx context.Context, input model.CreateInput) (m
 
 func (f *fakeModelStore) Get(ctx context.Context, id uuid.UUID) (model.Model, error) {
 	f.getID = id
+	if f.getErr != nil {
+		return model.Model{}, f.getErr
+	}
 	if f.getModel.ID != uuid.Nil || f.getModel.ProviderID != uuid.Nil || f.getModel.RemoteName != "" || f.getModel.OrganizationID != uuid.Nil {
 		mdl := f.getModel
 		if mdl.ID == uuid.Nil {
@@ -334,5 +342,41 @@ func TestResolveModelReturnsProviderDetails(t *testing.T) {
 	}
 	if resp.OrganizationId != organizationID.String() {
 		t.Fatalf("expected organization %s, got %s", organizationID, resp.OrganizationId)
+	}
+}
+
+func TestResolveModelInvalidID(t *testing.T) {
+	server := New(&fakeProviderStore{}, &fakeModelStore{})
+
+	_, err := server.ResolveModel(context.Background(), &llmv1.ResolveModelRequest{ModelId: "not-a-uuid"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected invalid argument, got %v", status.Code(err))
+	}
+}
+
+func TestResolveModelMissingModel(t *testing.T) {
+	modelID := uuid.MustParse("b4803be2-47c6-4387-acde-f5585340c253")
+	models := &fakeModelStore{getErr: model.ErrModelNotFound}
+	server := New(&fakeProviderStore{}, models)
+
+	_, err := server.ResolveModel(context.Background(), &llmv1.ResolveModelRequest{ModelId: modelID.String()})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected not found, got %v", status.Code(err))
+	}
+}
+
+func TestResolveModelMissingProvider(t *testing.T) {
+	modelID := uuid.MustParse("a1fa9127-3a81-4e7f-bdbf-809a6cf3aa3d")
+	providerID := uuid.MustParse("e6c3c99a-afef-4d8a-9e38-889341e6c3ae")
+	providers := &fakeProviderStore{getWithTokenErr: provider.ErrProviderNotFound}
+	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote"}}
+	server := New(providers, models)
+
+	_, err := server.ResolveModel(context.Background(), &llmv1.ResolveModelRequest{ModelId: modelID.String()})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected not found, got %v", status.Code(err))
+	}
+	if providers.getWithTokenID != providerID {
+		t.Fatalf("expected provider id %s, got %s", providerID, providers.getWithTokenID)
 	}
 }
