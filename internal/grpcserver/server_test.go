@@ -44,21 +44,32 @@ func TestToStatusErrorMappings(t *testing.T) {
 
 type fakeProviderStore struct {
 	createOrganizationID uuid.UUID
+	createAuthMethod     provider.AuthMethod
+	createProtocol       provider.Protocol
 	listOrganizationID   uuid.UUID
 	getID                uuid.UUID
 	getWithTokenID       uuid.UUID
 	getWithTokenOrgID    uuid.UUID
+	getWithTokenAuth     provider.AuthMethod
+	getWithTokenProtocol provider.Protocol
 	updateID             uuid.UUID
+	updateAuthMethod     provider.AuthMethod
+	updateProtocol       provider.Protocol
+	updateAuthMethodSet  bool
+	updateProtocolSet    bool
 	deleteID             uuid.UUID
 }
 
 func (f *fakeProviderStore) Create(ctx context.Context, input provider.CreateInput) (provider.Provider, error) {
 	f.createOrganizationID = input.OrganizationID
+	f.createAuthMethod = input.AuthMethod
+	f.createProtocol = input.Protocol
 	return provider.Provider{
 		ID:             uuid.MustParse("b0d2c70c-f2e7-4b33-94a1-d52468ed7ff1"),
 		OrganizationID: input.OrganizationID,
 		Endpoint:       input.Endpoint,
 		AuthMethod:     input.AuthMethod,
+		Protocol:       input.Protocol,
 		CreatedAt:      time.Unix(0, 0),
 		UpdatedAt:      time.Unix(0, 0),
 	}, nil
@@ -66,7 +77,7 @@ func (f *fakeProviderStore) Create(ctx context.Context, input provider.CreateInp
 
 func (f *fakeProviderStore) Get(ctx context.Context, id uuid.UUID) (provider.Provider, error) {
 	f.getID = id
-	return provider.Provider{ID: id, OrganizationID: uuid.Nil, Endpoint: "https://example.com", AuthMethod: provider.AuthMethodBearer, CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
+	return provider.Provider{ID: id, OrganizationID: uuid.Nil, Endpoint: "https://example.com", AuthMethod: provider.AuthMethodBearer, Protocol: provider.ProtocolResponses, CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
 }
 
 func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error) {
@@ -76,7 +87,8 @@ func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (pro
 			ID:             id,
 			OrganizationID: f.getWithTokenOrgID,
 			Endpoint:       "https://example.com",
-			AuthMethod:     provider.AuthMethodBearer,
+			AuthMethod:     f.getWithTokenAuth,
+			Protocol:       f.getWithTokenProtocol,
 			CreatedAt:      time.Unix(0, 0),
 			UpdatedAt:      time.Unix(0, 0),
 		},
@@ -86,7 +98,19 @@ func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (pro
 
 func (f *fakeProviderStore) Update(ctx context.Context, input provider.UpdateInput) (provider.Provider, error) {
 	f.updateID = input.ID
-	return provider.Provider{ID: input.ID, OrganizationID: uuid.Nil, Endpoint: "https://example.com", AuthMethod: provider.AuthMethodBearer, CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
+	authMethod := provider.AuthMethodBearer
+	protocol := provider.ProtocolResponses
+	if input.AuthMethod != nil {
+		f.updateAuthMethod = *input.AuthMethod
+		f.updateAuthMethodSet = true
+		authMethod = *input.AuthMethod
+	}
+	if input.Protocol != nil {
+		f.updateProtocol = *input.Protocol
+		f.updateProtocolSet = true
+		protocol = *input.Protocol
+	}
+	return provider.Provider{ID: input.ID, OrganizationID: uuid.Nil, Endpoint: "https://example.com", AuthMethod: authMethod, Protocol: protocol, CreatedAt: time.Unix(0, 0), UpdatedAt: time.Unix(0, 0)}, nil
 }
 
 func (f *fakeProviderStore) Delete(ctx context.Context, id uuid.UUID) error {
@@ -164,6 +188,56 @@ func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 	if providers.createOrganizationID != organizationID {
 		t.Fatalf("expected organization %s, got %s", organizationID, providers.createOrganizationID)
 	}
+	if providers.createAuthMethod != provider.AuthMethodBearer {
+		t.Fatalf("expected auth method %s, got %s", provider.AuthMethodBearer, providers.createAuthMethod)
+	}
+	if providers.createProtocol != provider.ProtocolResponses {
+		t.Fatalf("expected protocol %s, got %s", provider.ProtocolResponses, providers.createProtocol)
+	}
+}
+
+func TestCreateLLMProviderDefaultsProtocol(t *testing.T) {
+	organizationID := uuid.MustParse("6a8262f5-64f3-4c19-8215-8c0275733b39")
+	providers := &fakeProviderStore{}
+	server := New(providers, &fakeModelStore{})
+
+	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
+		Endpoint:       "https://example.com",
+		Token:          "token",
+		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_BEARER,
+		Protocol:       llmv1.Protocol_PROTOCOL_UNSPECIFIED,
+		OrganizationId: organizationID.String(),
+	})
+	if err != nil {
+		t.Fatalf("CreateLLMProvider: %v", err)
+	}
+	if providers.createProtocol != provider.ProtocolResponses {
+		t.Fatalf("expected protocol %s, got %s", provider.ProtocolResponses, providers.createProtocol)
+	}
+}
+
+func TestCreateLLMProviderSupportsXAPIKey(t *testing.T) {
+	organizationID := uuid.MustParse("83eb6de8-289b-4b25-8752-23d73bb2e346")
+	providers := &fakeProviderStore{}
+	server := New(providers, &fakeModelStore{})
+	protocol := llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES
+
+	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
+		Endpoint:       "https://example.com",
+		Token:          "token",
+		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_X_API_KEY,
+		Protocol:       protocol,
+		OrganizationId: organizationID.String(),
+	})
+	if err != nil {
+		t.Fatalf("CreateLLMProvider: %v", err)
+	}
+	if providers.createAuthMethod != provider.AuthMethodXAPIKey {
+		t.Fatalf("expected auth method %s, got %s", provider.AuthMethodXAPIKey, providers.createAuthMethod)
+	}
+	if providers.createProtocol != provider.ProtocolAnthropicMessages {
+		t.Fatalf("expected protocol %s, got %s", provider.ProtocolAnthropicMessages, providers.createProtocol)
+	}
 }
 
 func TestGetLLMProviderUsesID(t *testing.T) {
@@ -185,16 +259,26 @@ func TestUpdateLLMProviderUsesID(t *testing.T) {
 	providers := &fakeProviderStore{}
 	server := New(providers, &fakeModelStore{})
 	endpoint := "https://update.example.com"
+	protocol := llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES
+	authMethod := llmv1.AuthMethod_AUTH_METHOD_X_API_KEY
 
 	_, err := server.UpdateLLMProvider(contextWithIdentity(), &llmv1.UpdateLLMProviderRequest{
-		Id:       providerID.String(),
-		Endpoint: &endpoint,
+		Id:         providerID.String(),
+		Endpoint:   &endpoint,
+		Protocol:   &protocol,
+		AuthMethod: &authMethod,
 	})
 	if err != nil {
 		t.Fatalf("UpdateLLMProvider: %v", err)
 	}
 	if providers.updateID != providerID {
 		t.Fatalf("expected provider id %s, got %s", providerID, providers.updateID)
+	}
+	if !providers.updateAuthMethodSet || providers.updateAuthMethod != provider.AuthMethodXAPIKey {
+		t.Fatalf("expected auth method %s, got %s", provider.AuthMethodXAPIKey, providers.updateAuthMethod)
+	}
+	if !providers.updateProtocolSet || providers.updateProtocol != provider.ProtocolAnthropicMessages {
+		t.Fatalf("expected protocol %s, got %s", provider.ProtocolAnthropicMessages, providers.updateProtocol)
 	}
 }
 
@@ -309,7 +393,11 @@ func TestResolveModelReturnsProviderDetails(t *testing.T) {
 	modelID := uuid.MustParse("6e1a1a68-1e0f-4b07-8362-0a22e4c6bb86")
 	providerID := uuid.MustParse("3a6f3fb1-6372-4c30-bf34-0ff24511d9c0")
 	organizationID := uuid.MustParse("d65d0b42-33a1-45ac-a025-78f9117c3468")
-	providers := &fakeProviderStore{getWithTokenOrgID: organizationID}
+	providers := &fakeProviderStore{
+		getWithTokenOrgID:    organizationID,
+		getWithTokenAuth:     provider.AuthMethodXAPIKey,
+		getWithTokenProtocol: provider.ProtocolAnthropicMessages,
+	}
 	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote", OrganizationID: organizationID, Name: "model"}}
 	server := New(providers, models)
 
@@ -334,5 +422,77 @@ func TestResolveModelReturnsProviderDetails(t *testing.T) {
 	}
 	if resp.OrganizationId != organizationID.String() {
 		t.Fatalf("expected organization %s, got %s", organizationID, resp.OrganizationId)
+	}
+	if resp.AuthMethod != llmv1.AuthMethod_AUTH_METHOD_X_API_KEY {
+		t.Fatalf("expected auth method %v, got %v", llmv1.AuthMethod_AUTH_METHOD_X_API_KEY, resp.AuthMethod)
+	}
+	if resp.Protocol != llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES {
+		t.Fatalf("expected protocol %v, got %v", llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES, resp.Protocol)
+	}
+}
+
+func TestParseAuthMethodXAPIKey(t *testing.T) {
+	method, err := parseAuthMethod(llmv1.AuthMethod_AUTH_METHOD_X_API_KEY, false)
+	if err != nil {
+		t.Fatalf("parseAuthMethod: %v", err)
+	}
+	if method != provider.AuthMethodXAPIKey {
+		t.Fatalf("expected auth method %s, got %s", provider.AuthMethodXAPIKey, method)
+	}
+}
+
+func TestParseProtocol(t *testing.T) {
+	cases := []struct {
+		name             string
+		value            llmv1.Protocol
+		allowUnspecified bool
+		want             provider.Protocol
+		wantCode         codes.Code
+	}{
+		{
+			name:             "responses",
+			value:            llmv1.Protocol_PROTOCOL_RESPONSES,
+			allowUnspecified: false,
+			want:             provider.ProtocolResponses,
+		},
+		{
+			name:             "anthropic messages",
+			value:            llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES,
+			allowUnspecified: false,
+			want:             provider.ProtocolAnthropicMessages,
+		},
+		{
+			name:             "unspecified allowed",
+			value:            llmv1.Protocol_PROTOCOL_UNSPECIFIED,
+			allowUnspecified: true,
+			want:             provider.ProtocolResponses,
+		},
+		{
+			name:             "unspecified rejected",
+			value:            llmv1.Protocol_PROTOCOL_UNSPECIFIED,
+			allowUnspecified: false,
+			wantCode:         codes.InvalidArgument,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			protocol, err := parseProtocol(tc.value, tc.allowUnspecified)
+			if tc.wantCode != codes.OK {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				if status.Code(err) != tc.wantCode {
+					t.Fatalf("expected code %v, got %v", tc.wantCode, status.Code(err))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseProtocol: %v", err)
+			}
+			if protocol != tc.want {
+				t.Fatalf("expected protocol %s, got %s", tc.want, protocol)
+			}
+		})
 	}
 }

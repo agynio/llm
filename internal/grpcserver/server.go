@@ -61,11 +61,16 @@ func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProv
 	if err != nil {
 		return nil, err
 	}
+	protocol, err := parseProtocol(req.GetProtocol(), true)
+	if err != nil {
+		return nil, err
+	}
 
 	created, err := s.providers.Create(ctx, provider.CreateInput{
 		OrganizationID: organizationID,
 		Endpoint:       endpoint,
 		AuthMethod:     authMethod,
+		Protocol:       protocol,
 		Token:          token,
 	})
 	if err != nil {
@@ -115,6 +120,13 @@ func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProv
 			return nil, err
 		}
 		input.AuthMethod = &method
+	}
+	if req.Protocol != nil {
+		protocol, err := parseProtocol(req.GetProtocol(), false)
+		if err != nil {
+			return nil, err
+		}
+		input.Protocol = &protocol
 	}
 	if req.Token != nil {
 		token := strings.TrimSpace(req.GetToken())
@@ -361,6 +373,8 @@ func (s *Server) ResolveModel(ctx context.Context, req *llmv1.ResolveModelReques
 		Token:          prov.Token,
 		RemoteName:     mdl.RemoteName,
 		OrganizationId: prov.OrganizationID.String(),
+		Protocol:       toProtoProtocol(prov.Protocol),
+		AuthMethod:     toProtoAuthMethod(prov.AuthMethod),
 	}, nil
 }
 
@@ -380,6 +394,8 @@ func parseAuthMethod(value llmv1.AuthMethod, allowUnspecified bool) (provider.Au
 	switch value {
 	case llmv1.AuthMethod_AUTH_METHOD_BEARER:
 		return provider.AuthMethodBearer, nil
+	case llmv1.AuthMethod_AUTH_METHOD_X_API_KEY:
+		return provider.AuthMethodXAPIKey, nil
 	case llmv1.AuthMethod_AUTH_METHOD_UNSPECIFIED:
 		if allowUnspecified {
 			return provider.AuthMethodBearer, nil
@@ -387,6 +403,22 @@ func parseAuthMethod(value llmv1.AuthMethod, allowUnspecified bool) (provider.Au
 		return "", status.Error(codes.InvalidArgument, "auth_method must be set")
 	default:
 		return "", status.Error(codes.InvalidArgument, "auth_method is invalid")
+	}
+}
+
+func parseProtocol(value llmv1.Protocol, allowUnspecified bool) (provider.Protocol, error) {
+	switch value {
+	case llmv1.Protocol_PROTOCOL_RESPONSES:
+		return provider.ProtocolResponses, nil
+	case llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES:
+		return provider.ProtocolAnthropicMessages, nil
+	case llmv1.Protocol_PROTOCOL_UNSPECIFIED:
+		if allowUnspecified {
+			return provider.ProtocolResponses, nil
+		}
+		return "", status.Error(codes.InvalidArgument, "protocol must be set")
+	default:
+		return "", status.Error(codes.InvalidArgument, "protocol is invalid")
 	}
 }
 
@@ -400,6 +432,7 @@ func toProtoProvider(prov provider.Provider) *llmv1.LLMProvider {
 		Endpoint:       prov.Endpoint,
 		AuthMethod:     toProtoAuthMethod(prov.AuthMethod),
 		OrganizationId: prov.OrganizationID.String(),
+		Protocol:       toProtoProtocol(prov.Protocol),
 	}
 }
 
@@ -420,8 +453,21 @@ func toProtoAuthMethod(method provider.AuthMethod) llmv1.AuthMethod {
 	switch method {
 	case provider.AuthMethodBearer:
 		return llmv1.AuthMethod_AUTH_METHOD_BEARER
+	case provider.AuthMethodXAPIKey:
+		return llmv1.AuthMethod_AUTH_METHOD_X_API_KEY
 	default:
 		panic(fmt.Sprintf("unexpected auth method: %q", method))
+	}
+}
+
+func toProtoProtocol(protocol provider.Protocol) llmv1.Protocol {
+	switch protocol {
+	case provider.ProtocolResponses:
+		return llmv1.Protocol_PROTOCOL_RESPONSES
+	case provider.ProtocolAnthropicMessages:
+		return llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES
+	default:
+		panic(fmt.Sprintf("unexpected protocol: %q", protocol))
 	}
 }
 

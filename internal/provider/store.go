@@ -16,7 +16,15 @@ import (
 type AuthMethod string
 
 const (
-	AuthMethodBearer AuthMethod = "bearer"
+	AuthMethodBearer  AuthMethod = "bearer"
+	AuthMethodXAPIKey AuthMethod = "x-api-key"
+)
+
+type Protocol string
+
+const (
+	ProtocolResponses         Protocol = "responses"
+	ProtocolAnthropicMessages Protocol = "anthropic-messages"
 )
 
 var (
@@ -30,6 +38,7 @@ type Provider struct {
 	OrganizationID uuid.UUID
 	Endpoint       string
 	AuthMethod     AuthMethod
+	Protocol       Protocol
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -43,6 +52,7 @@ type CreateInput struct {
 	OrganizationID uuid.UUID
 	Endpoint       string
 	AuthMethod     AuthMethod
+	Protocol       Protocol
 	Token          string
 }
 
@@ -50,6 +60,7 @@ type UpdateInput struct {
 	ID         uuid.UUID
 	Endpoint   *string
 	AuthMethod *AuthMethod
+	Protocol   *Protocol
 	Token      *string
 }
 
@@ -67,46 +78,52 @@ func NewStore(pool *pgxpool.Pool) *Store {
 }
 
 func (s *Store) Create(ctx context.Context, input CreateInput) (Provider, error) {
-	row := s.pool.QueryRow(ctx, `INSERT INTO llm_providers (organization_id, endpoint, auth_method, token) VALUES ($1, $2, $3, $4) RETURNING id, organization_id, endpoint, auth_method, created_at, updated_at`, input.OrganizationID, input.Endpoint, string(input.AuthMethod), input.Token)
+	row := s.pool.QueryRow(ctx, `INSERT INTO llm_providers (organization_id, endpoint, auth_method, protocol, token) VALUES ($1, $2, $3, $4, $5) RETURNING id, organization_id, endpoint, auth_method, protocol, created_at, updated_at`, input.OrganizationID, input.Endpoint, string(input.AuthMethod), string(input.Protocol), input.Token)
 	var provider Provider
 	var authMethod string
-	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
+	var protocol string
+	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &protocol, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
 		return Provider{}, fmt.Errorf("insert provider: %w", err)
 	}
 	provider.AuthMethod = AuthMethod(authMethod)
+	provider.Protocol = Protocol(protocol)
 	return provider, nil
 }
 
 func (s *Store) Get(ctx context.Context, id uuid.UUID) (Provider, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, organization_id, endpoint, auth_method, created_at, updated_at FROM llm_providers WHERE id = $1`, id)
+	row := s.pool.QueryRow(ctx, `SELECT id, organization_id, endpoint, auth_method, protocol, created_at, updated_at FROM llm_providers WHERE id = $1`, id)
 	var provider Provider
 	var authMethod string
-	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
+	var protocol string
+	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &protocol, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Provider{}, ErrProviderNotFound
 		}
 		return Provider{}, fmt.Errorf("get provider: %w", err)
 	}
 	provider.AuthMethod = AuthMethod(authMethod)
+	provider.Protocol = Protocol(protocol)
 	return provider, nil
 }
 
 func (s *Store) GetWithToken(ctx context.Context, id uuid.UUID) (ProviderWithToken, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, organization_id, endpoint, auth_method, token, created_at, updated_at FROM llm_providers WHERE id = $1`, id)
+	row := s.pool.QueryRow(ctx, `SELECT id, organization_id, endpoint, auth_method, protocol, token, created_at, updated_at FROM llm_providers WHERE id = $1`, id)
 	var provider ProviderWithToken
 	var authMethod string
-	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &provider.Token, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
+	var protocol string
+	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &protocol, &provider.Token, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ProviderWithToken{}, ErrProviderNotFound
 		}
 		return ProviderWithToken{}, fmt.Errorf("get provider: %w", err)
 	}
 	provider.AuthMethod = AuthMethod(authMethod)
+	provider.Protocol = Protocol(protocol)
 	return provider, nil
 }
 func (s *Store) Update(ctx context.Context, input UpdateInput) (Provider, error) {
-	setClauses := make([]string, 0, 3)
-	args := make([]any, 0, 4)
+	setClauses := make([]string, 0, 4)
+	args := make([]any, 0, 5)
 
 	if input.Endpoint != nil {
 		setClauses = append(setClauses, fmt.Sprintf("endpoint = $%d", len(args)+1))
@@ -115,6 +132,10 @@ func (s *Store) Update(ctx context.Context, input UpdateInput) (Provider, error)
 	if input.AuthMethod != nil {
 		setClauses = append(setClauses, fmt.Sprintf("auth_method = $%d", len(args)+1))
 		args = append(args, string(*input.AuthMethod))
+	}
+	if input.Protocol != nil {
+		setClauses = append(setClauses, fmt.Sprintf("protocol = $%d", len(args)+1))
+		args = append(args, string(*input.Protocol))
 	}
 	if input.Token != nil {
 		setClauses = append(setClauses, fmt.Sprintf("token = $%d", len(args)+1))
@@ -126,18 +147,20 @@ func (s *Store) Update(ctx context.Context, input UpdateInput) (Provider, error)
 	setClauses = append(setClauses, "updated_at = NOW()")
 	args = append(args, input.ID)
 
-	query := fmt.Sprintf("UPDATE llm_providers SET %s WHERE id = $%d RETURNING id, organization_id, endpoint, auth_method, created_at, updated_at", strings.Join(setClauses, ", "), len(args))
+	query := fmt.Sprintf("UPDATE llm_providers SET %s WHERE id = $%d RETURNING id, organization_id, endpoint, auth_method, protocol, created_at, updated_at", strings.Join(setClauses, ", "), len(args))
 	row := s.pool.QueryRow(ctx, query, args...)
 
 	var provider Provider
 	var authMethod string
-	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
+	var protocol string
+	if err := row.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &protocol, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Provider{}, ErrProviderNotFound
 		}
 		return Provider{}, fmt.Errorf("update provider: %w", err)
 	}
 	provider.AuthMethod = AuthMethod(authMethod)
+	provider.Protocol = Protocol(protocol)
 	return provider, nil
 }
 
@@ -160,7 +183,7 @@ func (s *Store) List(ctx context.Context, organizationID uuid.UUID, pageSize int
 	limit := normalizePageSize(pageSize)
 
 	query := strings.Builder{}
-	query.WriteString(`SELECT id, organization_id, endpoint, auth_method, created_at, updated_at FROM llm_providers WHERE organization_id = $1`)
+	query.WriteString(`SELECT id, organization_id, endpoint, auth_method, protocol, created_at, updated_at FROM llm_providers WHERE organization_id = $1`)
 	args := []any{organizationID}
 	paramIndex := 2
 	if cursor != nil {
@@ -186,7 +209,8 @@ func (s *Store) List(ctx context.Context, organizationID uuid.UUID, pageSize int
 	for rows.Next() {
 		var provider Provider
 		var authMethod string
-		if err := rows.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
+		var protocol string
+		if err := rows.Scan(&provider.ID, &provider.OrganizationID, &provider.Endpoint, &authMethod, &protocol, &provider.CreatedAt, &provider.UpdatedAt); err != nil {
 			return ListResult{}, fmt.Errorf("scan provider: %w", err)
 		}
 		if int32(len(providers)) == limit {
@@ -194,6 +218,7 @@ func (s *Store) List(ctx context.Context, organizationID uuid.UUID, pageSize int
 			break
 		}
 		provider.AuthMethod = AuthMethod(authMethod)
+		provider.Protocol = Protocol(protocol)
 		providers = append(providers, provider)
 		last = provider
 	}
