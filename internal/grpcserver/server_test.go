@@ -82,21 +82,13 @@ func (f *fakeProviderStore) Get(ctx context.Context, id uuid.UUID) (provider.Pro
 
 func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error) {
 	f.getWithTokenID = id
-	authMethod := f.getWithTokenAuth
-	if authMethod == "" {
-		authMethod = provider.AuthMethodBearer
-	}
-	protocol := f.getWithTokenProtocol
-	if protocol == "" {
-		protocol = provider.ProtocolResponses
-	}
 	return provider.ProviderWithToken{
 		Provider: provider.Provider{
 			ID:             id,
 			OrganizationID: f.getWithTokenOrgID,
 			Endpoint:       "https://example.com",
-			AuthMethod:     authMethod,
-			Protocol:       protocol,
+			AuthMethod:     f.getWithTokenAuth,
+			Protocol:       f.getWithTokenProtocol,
 			CreatedAt:      time.Unix(0, 0),
 			UpdatedAt:      time.Unix(0, 0),
 		},
@@ -198,6 +190,26 @@ func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 	}
 	if providers.createAuthMethod != provider.AuthMethodBearer {
 		t.Fatalf("expected auth method %s, got %s", provider.AuthMethodBearer, providers.createAuthMethod)
+	}
+	if providers.createProtocol != provider.ProtocolResponses {
+		t.Fatalf("expected protocol %s, got %s", provider.ProtocolResponses, providers.createProtocol)
+	}
+}
+
+func TestCreateLLMProviderDefaultsProtocol(t *testing.T) {
+	organizationID := uuid.MustParse("6a8262f5-64f3-4c19-8215-8c0275733b39")
+	providers := &fakeProviderStore{}
+	server := New(providers, &fakeModelStore{})
+
+	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
+		Endpoint:       "https://example.com",
+		Token:          "token",
+		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_BEARER,
+		Protocol:       llmv1.Protocol_PROTOCOL_UNSPECIFIED,
+		OrganizationId: organizationID.String(),
+	})
+	if err != nil {
+		t.Fatalf("CreateLLMProvider: %v", err)
 	}
 	if providers.createProtocol != provider.ProtocolResponses {
 		t.Fatalf("expected protocol %s, got %s", provider.ProtocolResponses, providers.createProtocol)
@@ -416,5 +428,71 @@ func TestResolveModelReturnsProviderDetails(t *testing.T) {
 	}
 	if resp.Protocol != llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES {
 		t.Fatalf("expected protocol %v, got %v", llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES, resp.Protocol)
+	}
+}
+
+func TestParseAuthMethodXAPIKey(t *testing.T) {
+	method, err := parseAuthMethod(llmv1.AuthMethod_AUTH_METHOD_X_API_KEY, false)
+	if err != nil {
+		t.Fatalf("parseAuthMethod: %v", err)
+	}
+	if method != provider.AuthMethodXAPIKey {
+		t.Fatalf("expected auth method %s, got %s", provider.AuthMethodXAPIKey, method)
+	}
+}
+
+func TestParseProtocol(t *testing.T) {
+	cases := []struct {
+		name             string
+		value            llmv1.Protocol
+		allowUnspecified bool
+		want             provider.Protocol
+		wantCode         codes.Code
+	}{
+		{
+			name:             "responses",
+			value:            llmv1.Protocol_PROTOCOL_RESPONSES,
+			allowUnspecified: false,
+			want:             provider.ProtocolResponses,
+		},
+		{
+			name:             "anthropic messages",
+			value:            llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES,
+			allowUnspecified: false,
+			want:             provider.ProtocolAnthropicMessages,
+		},
+		{
+			name:             "unspecified allowed",
+			value:            llmv1.Protocol_PROTOCOL_UNSPECIFIED,
+			allowUnspecified: true,
+			want:             provider.ProtocolResponses,
+		},
+		{
+			name:             "unspecified rejected",
+			value:            llmv1.Protocol_PROTOCOL_UNSPECIFIED,
+			allowUnspecified: false,
+			wantCode:         codes.InvalidArgument,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			protocol, err := parseProtocol(tc.value, tc.allowUnspecified)
+			if tc.wantCode != codes.OK {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				if status.Code(err) != tc.wantCode {
+					t.Fatalf("expected code %v, got %v", tc.wantCode, status.Code(err))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseProtocol: %v", err)
+			}
+			if protocol != tc.want {
+				t.Fatalf("expected protocol %s, got %s", tc.want, protocol)
+			}
+		})
 	}
 }
