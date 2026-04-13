@@ -37,10 +37,14 @@ type Server struct {
 	llmv1.UnimplementedLLMServiceServer
 	providers ProviderStore
 	models    ModelStore
+	httpClient HTTPClient
 }
 
-func New(providers ProviderStore, models ModelStore) *Server {
-	return &Server{providers: providers, models: models}
+func New(providers ProviderStore, models ModelStore, httpClient HTTPClient) *Server {
+	if httpClient == nil {
+		panic("http client is required")
+	}
+	return &Server{providers: providers, models: models, httpClient: httpClient}
 }
 
 func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProviderRequest) (*llmv1.CreateLLMProviderResponse, error) {

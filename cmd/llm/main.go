@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -62,7 +63,7 @@ func run() error {
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus("agynio.api.llm.v1.LLMService", healthpb.HealthCheckResponse_SERVING)
-	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore))
+	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, http.DefaultClient))
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {
