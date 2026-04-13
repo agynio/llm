@@ -3,6 +3,7 @@ package grpcserver
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -171,10 +172,14 @@ func contextWithIdentity() context.Context {
 	))
 }
 
+func newTestServer(providers ProviderStore, models ModelStore) *Server {
+	return New(providers, models, http.DefaultClient)
+}
+
 func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("f79b0bde-9e46-44c0-9756-9eac9f383acd")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 
 	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
 		Endpoint:       "https://example.com",
@@ -199,7 +204,7 @@ func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 func TestCreateLLMProviderDefaultsProtocol(t *testing.T) {
 	organizationID := uuid.MustParse("6a8262f5-64f3-4c19-8215-8c0275733b39")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 
 	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
 		Endpoint:       "https://example.com",
@@ -219,7 +224,7 @@ func TestCreateLLMProviderDefaultsProtocol(t *testing.T) {
 func TestCreateLLMProviderSupportsXAPIKey(t *testing.T) {
 	organizationID := uuid.MustParse("83eb6de8-289b-4b25-8752-23d73bb2e346")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 	protocol := llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES
 
 	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
@@ -243,7 +248,7 @@ func TestCreateLLMProviderSupportsXAPIKey(t *testing.T) {
 func TestGetLLMProviderUsesID(t *testing.T) {
 	providerID := uuid.MustParse("b2910fd9-9f3b-4f31-9c3b-369b3a2040e0")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 
 	_, err := server.GetLLMProvider(contextWithIdentity(), &llmv1.GetLLMProviderRequest{Id: providerID.String()})
 	if err != nil {
@@ -257,7 +262,7 @@ func TestGetLLMProviderUsesID(t *testing.T) {
 func TestUpdateLLMProviderUsesID(t *testing.T) {
 	providerID := uuid.MustParse("56a4b7e4-3954-4f85-9df2-b0b2371c91f8")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 	endpoint := "https://update.example.com"
 	protocol := llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES
 	authMethod := llmv1.AuthMethod_AUTH_METHOD_X_API_KEY
@@ -285,7 +290,7 @@ func TestUpdateLLMProviderUsesID(t *testing.T) {
 func TestDeleteLLMProviderUsesID(t *testing.T) {
 	providerID := uuid.MustParse("0ea4b5b9-7fe0-4e1f-b1a1-a4b9f71001d5")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 
 	_, err := server.DeleteLLMProvider(contextWithIdentity(), &llmv1.DeleteLLMProviderRequest{Id: providerID.String()})
 	if err != nil {
@@ -299,7 +304,7 @@ func TestDeleteLLMProviderUsesID(t *testing.T) {
 func TestListLLMProvidersUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("22cb0675-4c69-4aa6-a41f-44cde1d2b0f4")
 	providers := &fakeProviderStore{}
-	server := New(providers, &fakeModelStore{})
+	server := newTestServer(providers, &fakeModelStore{})
 
 	_, err := server.ListLLMProviders(context.Background(), &llmv1.ListLLMProvidersRequest{PageSize: 5, OrganizationId: organizationID.String()})
 	if err != nil {
@@ -313,7 +318,7 @@ func TestListLLMProvidersUsesOrganizationID(t *testing.T) {
 func TestCreateModelUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("6d68256e-4f2a-4d20-9f2b-8e93b5c09a4b")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models)
+	server := newTestServer(&fakeProviderStore{}, models)
 
 	_, err := server.CreateModel(context.Background(), &llmv1.CreateModelRequest{
 		Name:           "name",
@@ -332,7 +337,7 @@ func TestCreateModelUsesOrganizationID(t *testing.T) {
 func TestGetModelUsesID(t *testing.T) {
 	modelID := uuid.MustParse("64b7b95d-1d57-4a95-8a13-2fdc7d4e5408")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models)
+	server := newTestServer(&fakeProviderStore{}, models)
 
 	_, err := server.GetModel(contextWithIdentity(), &llmv1.GetModelRequest{Id: modelID.String()})
 	if err != nil {
@@ -346,7 +351,7 @@ func TestGetModelUsesID(t *testing.T) {
 func TestUpdateModelUsesID(t *testing.T) {
 	modelID := uuid.MustParse("534d5726-ecb8-4d47-967b-8a337df56c52")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models)
+	server := newTestServer(&fakeProviderStore{}, models)
 	name := "updated"
 
 	_, err := server.UpdateModel(contextWithIdentity(), &llmv1.UpdateModelRequest{
@@ -364,7 +369,7 @@ func TestUpdateModelUsesID(t *testing.T) {
 func TestDeleteModelUsesID(t *testing.T) {
 	modelID := uuid.MustParse("da8c9c3a-8791-4d9f-a73f-83f31138dc28")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models)
+	server := newTestServer(&fakeProviderStore{}, models)
 
 	_, err := server.DeleteModel(contextWithIdentity(), &llmv1.DeleteModelRequest{Id: modelID.String()})
 	if err != nil {
@@ -378,7 +383,7 @@ func TestDeleteModelUsesID(t *testing.T) {
 func TestListModelsUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("0f42fd48-4d3e-4382-b787-6e681d8b82a0")
 	models := &fakeModelStore{}
-	server := New(&fakeProviderStore{}, models)
+	server := newTestServer(&fakeProviderStore{}, models)
 
 	_, err := server.ListModels(context.Background(), &llmv1.ListModelsRequest{PageSize: 5, OrganizationId: organizationID.String()})
 	if err != nil {
@@ -399,7 +404,7 @@ func TestResolveModelReturnsProviderDetails(t *testing.T) {
 		getWithTokenProtocol: provider.ProtocolAnthropicMessages,
 	}
 	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote", OrganizationID: organizationID, Name: "model"}}
-	server := New(providers, models)
+	server := newTestServer(providers, models)
 
 	resp, err := server.ResolveModel(context.Background(), &llmv1.ResolveModelRequest{ModelId: modelID.String()})
 	if err != nil {

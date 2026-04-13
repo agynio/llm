@@ -27,7 +27,9 @@ const (
 	testModelMaxErrorBodyBytes          = 1024
 )
 
-var testModelHTTPClient = &http.Client{}
+type HTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+}
 
 type testModelError struct {
 	code    codes.Code
@@ -107,7 +109,7 @@ func (s *Server) TestModel(ctx context.Context, req *llmv1.TestModelRequest) (*l
 		return nil, statusErrorForTestModel(err)
 	}
 
-	outputText, err := testModel(ctx, input)
+	outputText, err := testModel(ctx, s.httpClient, input)
 	if err != nil {
 		return nil, statusErrorForTestModel(err)
 	}
@@ -154,7 +156,7 @@ func newTestModelInput(mdl model.Model, prov provider.ProviderWithToken) (testMo
 	}, nil
 }
 
-func testModel(ctx context.Context, input testModelInput) (string, error) {
+func testModel(ctx context.Context, httpClient HTTPClient, input testModelInput) (string, error) {
 	body, headers, err := buildTestModelRequest(input)
 	if err != nil {
 		return "", err
@@ -169,7 +171,7 @@ func testModel(ctx context.Context, input testModelInput) (string, error) {
 	}
 	request.Header = headers
 
-	response, err := testModelHTTPClient.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return "", newTestModelError(codes.Unavailable, fmt.Sprintf("request failed: %v", err))
 	}
@@ -295,7 +297,24 @@ func formatUpstreamError(statusCode int, responseBody []byte) string {
 		return fmt.Sprintf("request failed with status %d", statusCode)
 	}
 	if len(trimmed) > testModelMaxErrorBodyBytes {
-		trimmed = trimmed[:testModelMaxErrorBodyBytes] + "..."
+		trimmed = truncateUTF8(trimmed, testModelMaxErrorBodyBytes) + "..."
 	}
 	return fmt.Sprintf("request failed with status %d: %s", statusCode, trimmed)
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 || value == "" {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	cutoff := 0
+	for i := range value {
+		if i > maxBytes {
+			break
+		}
+		cutoff = i
+	}
+	return value[:cutoff]
 }

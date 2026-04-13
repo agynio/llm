@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
@@ -219,6 +220,22 @@ func TestParseResponsesOutput(t *testing.T) {
 	}
 }
 
+func TestParseResponsesOutputEmpty(t *testing.T) {
+	body, err := json.Marshal(responsesResponse{
+		Output: []responsesOutput{{Content: []responsesContent{{Text: "  "}}}},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal response: %v", err)
+	}
+	_, err = parseResponsesOutput(body)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if err.Error() != "response output text missing" {
+		t.Fatalf("expected missing output error, got %q", err.Error())
+	}
+}
+
 func TestParseAnthropicOutput(t *testing.T) {
 	body, err := json.Marshal(anthropicResponse{
 		Content: []anthropicContent{
@@ -239,7 +256,7 @@ func TestParseAnthropicOutput(t *testing.T) {
 }
 
 func TestFormatUpstreamErrorTruncates(t *testing.T) {
-	body := strings.Repeat("a", testModelMaxErrorBodyBytes+10)
+	body := strings.Repeat("✓", (testModelMaxErrorBodyBytes/3)+10)
 	message := formatUpstreamError(http.StatusBadGateway, []byte(body))
 	prefix := fmt.Sprintf("request failed with status %d: ", http.StatusBadGateway)
 	if !strings.HasPrefix(message, prefix) {
@@ -249,8 +266,15 @@ func TestFormatUpstreamErrorTruncates(t *testing.T) {
 	if !strings.HasSuffix(trimmed, "...") {
 		t.Fatalf("expected truncated message suffix")
 	}
-	if len(trimmed) != testModelMaxErrorBodyBytes+3 {
-		t.Fatalf("expected trimmed length %d, got %d", testModelMaxErrorBodyBytes+3, len(trimmed))
+	trimmedContent := strings.TrimSuffix(trimmed, "...")
+	if len(trimmedContent) > testModelMaxErrorBodyBytes {
+		t.Fatalf("expected trimmed length <= %d, got %d", testModelMaxErrorBodyBytes, len(trimmedContent))
+	}
+	if trimmedContent == "" {
+		t.Fatalf("expected truncated content to be non-empty")
+	}
+	if !utf8.ValidString(trimmedContent) {
+		t.Fatalf("expected valid UTF-8 content")
 	}
 }
 
@@ -321,7 +345,7 @@ func TestTestModelSuccessResponses(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	output, err := testModel(ctx, testModelInput{
+	output, err := testModel(ctx, server.Client(), testModelInput{
 		endpoint:   server.URL,
 		remoteName: "remote",
 		token:      "token",
@@ -338,5 +362,139 @@ func TestTestModelSuccessResponses(t *testing.T) {
 	case err := <-errCh:
 		t.Fatalf("server validation failed: %v", err)
 	default:
+	}
+}
+
+func TestTestModelSuccessAnthropic(t *testing.T) {
+	errCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			select {
+			case errCh <- fmt.Errorf("expected POST, got %s", r.Method):
+			default:
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if got := r.Header.Get("x-api-key"); got != "token" {
+			select {
+			case errCh <- fmt.Errorf("expected x-api-key, got %q", got):
+			default:
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("anthropic-version"); got != testModelAnthropicHeader {
+			select {
+			case errCh <- fmt.Errorf("expected anthropic version, got %q", got):
+			default:
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			select {
+			case errCh <- fmt.Errorf("expected content type, got %q", got):
+			default:
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			select {
+			case errCh <- fmt.Errorf("failed to read body: %v", err):
+			default:
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var payload anthropicRequest
+		if err := json.Unmarshal(body, &payload); err != nil {
+			select {
+			case errCh <- fmt.Errorf("invalid payload: %v", err):
+			default:
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload.Model != "remote" || payload.MaxTokens != testModelAnthropicMaxTokens {
+			select {
+			case errCh <- fmt.Errorf("unexpected payload: %#v", payload):
+			default:
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(payload.Messages) != 1 || payload.Messages[0].Role != "user" || payload.Messages[0].Content != testModelPrompt {
+			select {
+			case errCh <- fmt.Errorf("unexpected messages: %#v", payload.Messages):
+			default:
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(anthropicResponse{
+			Content: []anthropicContent{{Text: "ok"}},
+		}); err != nil {
+			select {
+			case errCh <- fmt.Errorf("failed to write response: %v", err):
+			default:
+			}
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	output, err := testModel(ctx, server.Client(), testModelInput{
+		endpoint:   server.URL,
+		remoteName: "remote",
+		token:      "token",
+		protocol:   provider.ProtocolAnthropicMessages,
+		authMethod: provider.AuthMethodXAPIKey,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output != "ok" {
+		t.Fatalf("expected output to match, got %q", output)
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("server validation failed: %v", err)
+	default:
+	}
+}
+
+func TestTestModelErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("nope"))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := testModel(ctx, server.Client(), testModelInput{
+		endpoint:   server.URL,
+		remoteName: "remote",
+		token:      "token",
+		protocol:   provider.ProtocolResponses,
+		authMethod: provider.AuthMethodBearer,
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var testErr *testModelError
+	if !errors.As(err, &testErr) {
+		t.Fatalf("expected testModelError, got %T", err)
+	}
+	if testErr.code != codes.Unavailable {
+		t.Fatalf("expected code %v, got %v", codes.Unavailable, testErr.code)
+	}
+	if testErr.message != "request failed with status 502: nope" {
+		t.Fatalf("unexpected message %q", testErr.message)
 	}
 }
