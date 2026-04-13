@@ -2,8 +2,11 @@ package grpcserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -51,6 +54,8 @@ type fakeProviderStore struct {
 	getID                uuid.UUID
 	getWithTokenID       uuid.UUID
 	getWithTokenOrgID    uuid.UUID
+	getWithTokenEndpoint string
+	getWithTokenToken    string
 	getWithTokenAuth     provider.AuthMethod
 	getWithTokenProtocol provider.Protocol
 	updateID             uuid.UUID
@@ -83,17 +88,25 @@ func (f *fakeProviderStore) Get(ctx context.Context, id uuid.UUID) (provider.Pro
 
 func (f *fakeProviderStore) GetWithToken(ctx context.Context, id uuid.UUID) (provider.ProviderWithToken, error) {
 	f.getWithTokenID = id
+	endpoint := f.getWithTokenEndpoint
+	if endpoint == "" {
+		endpoint = "https://example.com"
+	}
+	token := f.getWithTokenToken
+	if token == "" {
+		token = "token"
+	}
 	return provider.ProviderWithToken{
 		Provider: provider.Provider{
 			ID:             id,
 			OrganizationID: f.getWithTokenOrgID,
-			Endpoint:       "https://example.com",
+			Endpoint:       endpoint,
 			AuthMethod:     f.getWithTokenAuth,
 			Protocol:       f.getWithTokenProtocol,
 			CreatedAt:      time.Unix(0, 0),
 			UpdatedAt:      time.Unix(0, 0),
 		},
-		Token: "token",
+		Token: token,
 	}, nil
 }
 
@@ -433,6 +446,79 @@ func TestResolveModelReturnsProviderDetails(t *testing.T) {
 	}
 	if resp.Protocol != llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES {
 		t.Fatalf("expected protocol %v, got %v", llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES, resp.Protocol)
+	}
+}
+
+func TestTestModelReturnsOutput(t *testing.T) {
+	modelID := uuid.MustParse("7603bcce-803d-4caa-91c2-9c46c142a22b")
+	providerID := uuid.MustParse("cd3a55ac-6bef-4d18-b0f1-7d41447ecfe0")
+	handlerErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			handlerErr <- errors.New("expected POST request")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			handlerErr <- errors.New("authorization header missing")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			handlerErr <- err
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var payload responsesRequest
+		if err := json.Unmarshal(body, &payload); err != nil {
+			handlerErr <- err
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload.Model != "remote" {
+			handlerErr <- errors.New("unexpected model")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload.Input != testModelPrompt {
+			handlerErr <- errors.New("unexpected prompt")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"content":[{"text":"ok"}]}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	providers := &fakeProviderStore{
+		getWithTokenEndpoint: server.URL,
+		getWithTokenAuth:     provider.AuthMethodBearer,
+		getWithTokenProtocol: provider.ProtocolResponses,
+		getWithTokenToken:    "token",
+	}
+	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote"}}
+	service := New(providers, models)
+
+	resp, err := service.TestModel(context.Background(), &llmv1.TestModelRequest{ModelId: modelID.String()})
+	if err != nil {
+		t.Fatalf("TestModel: %v", err)
+	}
+	if models.getID != modelID {
+		t.Fatalf("expected model id %s, got %s", modelID, models.getID)
+	}
+	if providers.getWithTokenID != providerID {
+		t.Fatalf("expected provider id %s, got %s", providerID, providers.getWithTokenID)
+	}
+	if resp.OutputText != "ok" {
+		t.Fatalf("expected output ok, got %s", resp.OutputText)
+	}
+	select {
+	case err := <-handlerErr:
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+	default:
 	}
 }
 
