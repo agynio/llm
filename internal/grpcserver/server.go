@@ -356,35 +356,6 @@ func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (
 	return resp, nil
 }
 
-func (s *Server) TestModel(ctx context.Context, req *llmv1.TestModelRequest) (*llmv1.TestModelResponse, error) {
-	modelID, err := parseUUID(req.GetModelId(), "model_id")
-	if err != nil {
-		return nil, err
-	}
-
-	mdl, err := s.models.Get(ctx, modelID)
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-
-	prov, err := s.providers.GetWithToken(ctx, mdl.ProviderID)
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-
-	input, err := buildTestModelInput(mdl, prov)
-	if err != nil {
-		return nil, statusErrorForTestModel(err)
-	}
-
-	outputText, err := testModel(ctx, input)
-	if err != nil {
-		return nil, statusErrorForTestModel(err)
-	}
-
-	return &llmv1.TestModelResponse{OutputText: outputText}, nil
-}
-
 func (s *Server) ResolveModel(ctx context.Context, req *llmv1.ResolveModelRequest) (*llmv1.ResolveModelResponse, error) {
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {

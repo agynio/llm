@@ -498,7 +498,7 @@ func TestTestModelReturnsOutput(t *testing.T) {
 		getWithTokenToken:    "token",
 	}
 	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote"}}
-	service := New(providers, models)
+	service := New(providers, models, server.Client())
 
 	resp, err := service.TestModel(context.Background(), &llmv1.TestModelRequest{ModelId: modelID.String()})
 	if err != nil {
