@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	authorizationv1 "github.com/agynio/llm/.gen/go/agynio/api/authorization/v1"
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/identity"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -178,6 +180,29 @@ func (f *fakeModelStore) List(ctx context.Context, organizationID uuid.UUID, fil
 	return model.ListResult{Models: []model.Model{}}, nil
 }
 
+type fakeAuthorizationClient struct {
+	checkFn       func(ctx context.Context, req *authorizationv1.CheckRequest) (*authorizationv1.CheckResponse, error)
+	writeFn       func(ctx context.Context, req *authorizationv1.WriteRequest) (*authorizationv1.WriteResponse, error)
+	checkRequests []*authorizationv1.CheckRequest
+	writeRequests []*authorizationv1.WriteRequest
+}
+
+func (f *fakeAuthorizationClient) Check(ctx context.Context, req *authorizationv1.CheckRequest, _ ...grpc.CallOption) (*authorizationv1.CheckResponse, error) {
+	f.checkRequests = append(f.checkRequests, req)
+	if f.checkFn != nil {
+		return f.checkFn(ctx, req)
+	}
+	return &authorizationv1.CheckResponse{Allowed: true}, nil
+}
+
+func (f *fakeAuthorizationClient) Write(ctx context.Context, req *authorizationv1.WriteRequest, _ ...grpc.CallOption) (*authorizationv1.WriteResponse, error) {
+	f.writeRequests = append(f.writeRequests, req)
+	if f.writeFn != nil {
+		return f.writeFn(ctx, req)
+	}
+	return &authorizationv1.WriteResponse{}, nil
+}
+
 func contextWithIdentity() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		identity.MetadataKeyIdentityID, "identity-1",
@@ -186,7 +211,7 @@ func contextWithIdentity() context.Context {
 }
 
 func newTestServer(providers ProviderStore, models ModelStore) *Server {
-	return New(providers, models, http.DefaultClient)
+	return New(providers, models, &fakeAuthorizationClient{}, http.DefaultClient)
 }
 
 func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
@@ -194,7 +219,7 @@ func TestCreateLLMProviderUsesOrganizationID(t *testing.T) {
 	providers := &fakeProviderStore{}
 	server := newTestServer(providers, &fakeModelStore{})
 
-	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
+	_, err := server.CreateLLMProvider(contextWithIdentity(), &llmv1.CreateLLMProviderRequest{
 		Endpoint:       "https://example.com",
 		Token:          "token",
 		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_BEARER,
@@ -219,7 +244,7 @@ func TestCreateLLMProviderDefaultsProtocol(t *testing.T) {
 	providers := &fakeProviderStore{}
 	server := newTestServer(providers, &fakeModelStore{})
 
-	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
+	_, err := server.CreateLLMProvider(contextWithIdentity(), &llmv1.CreateLLMProviderRequest{
 		Endpoint:       "https://example.com",
 		Token:          "token",
 		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_BEARER,
@@ -240,7 +265,7 @@ func TestCreateLLMProviderSupportsXAPIKey(t *testing.T) {
 	server := newTestServer(providers, &fakeModelStore{})
 	protocol := llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES
 
-	_, err := server.CreateLLMProvider(context.Background(), &llmv1.CreateLLMProviderRequest{
+	_, err := server.CreateLLMProvider(contextWithIdentity(), &llmv1.CreateLLMProviderRequest{
 		Endpoint:       "https://example.com",
 		Token:          "token",
 		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_X_API_KEY,
@@ -255,6 +280,36 @@ func TestCreateLLMProviderSupportsXAPIKey(t *testing.T) {
 	}
 	if providers.createProtocol != provider.ProtocolAnthropicMessages {
 		t.Fatalf("expected protocol %s, got %s", provider.ProtocolAnthropicMessages, providers.createProtocol)
+	}
+}
+
+func TestCreateLLMProviderAuthorizationDenied(t *testing.T) {
+	organizationID := uuid.MustParse("6a34b377-3fbb-4dbf-91c4-b14925ac7d7c")
+	providers := &fakeProviderStore{}
+	authorization := &fakeAuthorizationClient{
+		checkFn: func(_ context.Context, req *authorizationv1.CheckRequest) (*authorizationv1.CheckResponse, error) {
+			if req.GetTupleKey().GetRelation() != "owner" {
+				t.Fatalf("expected relation owner, got %s", req.GetTupleKey().GetRelation())
+			}
+			if req.GetTupleKey().GetObject() != "organization:"+organizationID.String() {
+				t.Fatalf("unexpected object %s", req.GetTupleKey().GetObject())
+			}
+			return &authorizationv1.CheckResponse{Allowed: false}, nil
+		},
+	}
+	server := New(providers, &fakeModelStore{}, authorization, http.DefaultClient)
+
+	_, err := server.CreateLLMProvider(contextWithIdentity(), &llmv1.CreateLLMProviderRequest{
+		Endpoint:       "https://example.com",
+		Token:          "token",
+		AuthMethod:     llmv1.AuthMethod_AUTH_METHOD_BEARER,
+		OrganizationId: organizationID.String(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected permission denied, got %v", status.Code(err))
+	}
+	if providers.createOrganizationID != uuid.Nil {
+		t.Fatalf("expected create not called")
 	}
 }
 
@@ -319,7 +374,7 @@ func TestListLLMProvidersUsesOrganizationID(t *testing.T) {
 	providers := &fakeProviderStore{}
 	server := newTestServer(providers, &fakeModelStore{})
 
-	_, err := server.ListLLMProviders(context.Background(), &llmv1.ListLLMProvidersRequest{PageSize: 5, OrganizationId: organizationID.String()})
+	_, err := server.ListLLMProviders(contextWithIdentity(), &llmv1.ListLLMProvidersRequest{PageSize: 5, OrganizationId: organizationID.String()})
 	if err != nil {
 		t.Fatalf("ListLLMProviders: %v", err)
 	}
@@ -333,7 +388,7 @@ func TestCreateModelUsesOrganizationID(t *testing.T) {
 	models := &fakeModelStore{}
 	server := newTestServer(&fakeProviderStore{}, models)
 
-	_, err := server.CreateModel(context.Background(), &llmv1.CreateModelRequest{
+	_, err := server.CreateModel(contextWithIdentity(), &llmv1.CreateModelRequest{
 		Name:           "name",
 		LlmProviderId:  uuid.MustParse("b89fc3c9-0e60-4a74-84c0-c4f1d26c1ee1").String(),
 		RemoteName:     "remote",
@@ -344,6 +399,44 @@ func TestCreateModelUsesOrganizationID(t *testing.T) {
 	}
 	if models.createOrganizationID != organizationID {
 		t.Fatalf("expected organization %s, got %s", organizationID, models.createOrganizationID)
+	}
+}
+
+func TestCreateModelWritesAuthorizationTuple(t *testing.T) {
+	organizationID := uuid.MustParse("9fd2468a-3387-48f0-9859-7eaf84f8b6d0")
+	modelID := uuid.MustParse("1bb21ea2-03c8-453b-a0ef-c4a12f0f8f2a")
+	models := &fakeModelStore{}
+	authorization := &fakeAuthorizationClient{
+		checkFn: func(_ context.Context, _ *authorizationv1.CheckRequest) (*authorizationv1.CheckResponse, error) {
+			return &authorizationv1.CheckResponse{Allowed: true}, nil
+		},
+		writeFn: func(_ context.Context, req *authorizationv1.WriteRequest) (*authorizationv1.WriteResponse, error) {
+			if len(req.GetWrites()) != 1 {
+				t.Fatalf("expected 1 write, got %d", len(req.GetWrites()))
+			}
+			tuple := req.GetWrites()[0]
+			if tuple.GetUser() != "organization:"+organizationID.String() {
+				t.Fatalf("unexpected user %s", tuple.GetUser())
+			}
+			if tuple.GetRelation() != "org" {
+				t.Fatalf("unexpected relation %s", tuple.GetRelation())
+			}
+			if tuple.GetObject() != "model:"+modelID.String() {
+				t.Fatalf("unexpected object %s", tuple.GetObject())
+			}
+			return &authorizationv1.WriteResponse{}, nil
+		},
+	}
+	server := New(&fakeProviderStore{}, models, authorization, http.DefaultClient)
+
+	_, err := server.CreateModel(contextWithIdentity(), &llmv1.CreateModelRequest{
+		Name:           "name",
+		LlmProviderId:  uuid.MustParse("b89fc3c9-0e60-4a74-84c0-c4f1d26c1ee1").String(),
+		RemoteName:     "remote",
+		OrganizationId: organizationID.String(),
+	})
+	if err != nil {
+		t.Fatalf("CreateModel: %v", err)
 	}
 }
 
@@ -358,6 +451,23 @@ func TestGetModelUsesID(t *testing.T) {
 	}
 	if models.getID != modelID {
 		t.Fatalf("expected model id %s, got %s", modelID, models.getID)
+	}
+}
+
+func TestGetModelAuthorizationDenied(t *testing.T) {
+	modelID := uuid.MustParse("66c03014-4709-480f-876a-f05cbaf3a1d7")
+	organizationID := uuid.MustParse("c1f0da2f-cf7b-49ef-a821-1466dc1592a4")
+	models := &fakeModelStore{getModel: model.Model{OrganizationID: organizationID}}
+	authorization := &fakeAuthorizationClient{
+		checkFn: func(_ context.Context, _ *authorizationv1.CheckRequest) (*authorizationv1.CheckResponse, error) {
+			return &authorizationv1.CheckResponse{Allowed: false}, nil
+		},
+	}
+	server := New(&fakeProviderStore{}, models, authorization, http.DefaultClient)
+
+	_, err := server.GetModel(contextWithIdentity(), &llmv1.GetModelRequest{Id: modelID.String()})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected permission denied, got %v", status.Code(err))
 	}
 }
 
@@ -393,12 +503,45 @@ func TestDeleteModelUsesID(t *testing.T) {
 	}
 }
 
+func TestDeleteModelDeletesAuthorizationTuple(t *testing.T) {
+	modelID := uuid.MustParse("0d0243f7-7eab-49f6-8a57-bfeec466e28f")
+	organizationID := uuid.MustParse("d19a2438-ea47-4b6e-8c62-a58f71c78c9c")
+	models := &fakeModelStore{getModel: model.Model{ID: modelID, OrganizationID: organizationID}}
+	authorization := &fakeAuthorizationClient{
+		checkFn: func(_ context.Context, _ *authorizationv1.CheckRequest) (*authorizationv1.CheckResponse, error) {
+			return &authorizationv1.CheckResponse{Allowed: true}, nil
+		},
+		writeFn: func(_ context.Context, req *authorizationv1.WriteRequest) (*authorizationv1.WriteResponse, error) {
+			if len(req.GetDeletes()) != 1 {
+				t.Fatalf("expected 1 delete, got %d", len(req.GetDeletes()))
+			}
+			tuple := req.GetDeletes()[0]
+			if tuple.GetUser() != "organization:"+organizationID.String() {
+				t.Fatalf("unexpected user %s", tuple.GetUser())
+			}
+			if tuple.GetRelation() != "org" {
+				t.Fatalf("unexpected relation %s", tuple.GetRelation())
+			}
+			if tuple.GetObject() != "model:"+modelID.String() {
+				t.Fatalf("unexpected object %s", tuple.GetObject())
+			}
+			return &authorizationv1.WriteResponse{}, nil
+		},
+	}
+	server := New(&fakeProviderStore{}, models, authorization, http.DefaultClient)
+
+	_, err := server.DeleteModel(contextWithIdentity(), &llmv1.DeleteModelRequest{Id: modelID.String()})
+	if err != nil {
+		t.Fatalf("DeleteModel: %v", err)
+	}
+}
+
 func TestListModelsUsesOrganizationID(t *testing.T) {
 	organizationID := uuid.MustParse("0f42fd48-4d3e-4382-b787-6e681d8b82a0")
 	models := &fakeModelStore{}
 	server := newTestServer(&fakeProviderStore{}, models)
 
-	_, err := server.ListModels(context.Background(), &llmv1.ListModelsRequest{PageSize: 5, OrganizationId: organizationID.String()})
+	_, err := server.ListModels(contextWithIdentity(), &llmv1.ListModelsRequest{PageSize: 5, OrganizationId: organizationID.String()})
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
@@ -498,9 +641,9 @@ func TestTestModelReturnsOutput(t *testing.T) {
 		getWithTokenToken:    "token",
 	}
 	models := &fakeModelStore{getModel: model.Model{ProviderID: providerID, RemoteName: "remote"}}
-	service := New(providers, models, server.Client())
+	service := New(providers, models, &fakeAuthorizationClient{}, server.Client())
 
-	resp, err := service.TestModel(context.Background(), &llmv1.TestModelRequest{ModelId: modelID.String()})
+	resp, err := service.TestModel(contextWithIdentity(), &llmv1.TestModelRequest{ModelId: modelID.String()})
 	if err != nil {
 		t.Fatalf("TestModel: %v", err)
 	}

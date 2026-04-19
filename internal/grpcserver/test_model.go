@@ -12,6 +12,7 @@ import (
 	"time"
 
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
+	"github.com/agynio/llm/internal/identity"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
 	"google.golang.org/grpc/codes"
@@ -89,6 +90,10 @@ type anthropicContent struct {
 }
 
 func (s *Server) TestModel(ctx context.Context, req *llmv1.TestModelRequest) (*llmv1.TestModelResponse, error) {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
 		return nil, err
@@ -97,6 +102,9 @@ func (s *Server) TestModel(ctx context.Context, req *llmv1.TestModelRequest) (*l
 	mdl, err := s.models.Get(ctx, modelID)
 	if err != nil {
 		return nil, toStatusError(err)
+	}
+	if err := s.requireOrgMember(ctx, caller.IdentityID, mdl.OrganizationID); err != nil {
+		return nil, err
 	}
 
 	prov, err := s.providers.GetWithToken(ctx, mdl.ProviderID)
