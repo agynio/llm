@@ -147,6 +147,7 @@ metrics:
 
 llm:
   grpcAddress: ":50051"
+  authorizationAddress: "authorization:50051"
   databaseUrl:
     value: ""
     existingSecret: ""

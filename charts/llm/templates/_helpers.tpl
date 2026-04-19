@@ -5,6 +5,10 @@
 {{- if $grpcAddress }}
 {{- $env = append $env (dict "name" "GRPC_ADDRESS" "value" $grpcAddress) -}}
 {{- end }}
+{{- $authorizationAddress := trimAll " \n\t" (default "authorization:50051" .Values.llm.authorizationAddress) -}}
+{{- if $authorizationAddress }}
+{{- $env = append $env (dict "name" "AUTHORIZATION_ADDRESS" "value" $authorizationAddress) -}}
+{{- end }}
 {{- $dbSecret := trim (default "" .Values.llm.databaseUrl.existingSecret) -}}
 {{- $dbVar := dict "name" "DATABASE_URL" -}}
 {{- if $dbSecret }}

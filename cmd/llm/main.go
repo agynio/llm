@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	authorizationv1 "github.com/agynio/llm/.gen/go/agynio/api/authorization/v1"
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/config"
 	"github.com/agynio/llm/internal/db"
@@ -20,6 +21,7 @@ import (
 	"github.com/agynio/llm/internal/provider"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -57,13 +59,18 @@ func run() error {
 
 	providerStore := provider.NewStore(pool)
 	modelStore := model.NewStore(pool)
+	authorizationConn, err := grpc.DialContext(ctx, cfg.AuthorizationAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial authorization: %w", err)
+	}
+	defer authorizationConn.Close()
 
 	grpcServer := grpc.NewServer()
 	healthServer := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus("agynio.api.llm.v1.LLMService", healthpb.HealthCheckResponse_SERVING)
-	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, http.DefaultClient))
+	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, authorizationv1.NewAuthorizationServiceClient(authorizationConn), http.DefaultClient))
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {

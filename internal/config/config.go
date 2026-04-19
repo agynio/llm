@@ -7,12 +7,14 @@ import (
 )
 
 const (
-	defaultGRPCAddress = ":50051"
+	defaultGRPCAddress          = ":50051"
+	defaultAuthorizationAddress = "authorization:50051"
 )
 
 type Config struct {
-	GRPCAddress string
-	DatabaseURL string
+	GRPCAddress          string
+	AuthorizationAddress string
+	DatabaseURL          string
 }
 
 func FromEnv() (Config, error) {
@@ -21,6 +23,10 @@ func FromEnv() (Config, error) {
 	cfg.GRPCAddress = strings.TrimSpace(os.Getenv("GRPC_ADDRESS"))
 	if cfg.GRPCAddress == "" {
 		cfg.GRPCAddress = defaultGRPCAddress
+	}
+	cfg.AuthorizationAddress = strings.TrimSpace(os.Getenv("AUTHORIZATION_ADDRESS"))
+	if cfg.AuthorizationAddress == "" {
+		cfg.AuthorizationAddress = defaultAuthorizationAddress
 	}
 	var err error
 	cfg.DatabaseURL, err = requiredEnv("DATABASE_URL")

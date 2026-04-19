@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"strings"
 
+	authorizationv1 "github.com/agynio/llm/.gen/go/agynio/api/authorization/v1"
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/identity"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -33,23 +35,45 @@ type ModelStore interface {
 	List(ctx context.Context, organizationID uuid.UUID, filter model.ListFilter, pageSize int32, cursor *model.PageCursor) (model.ListResult, error)
 }
 
-type Server struct {
-	llmv1.UnimplementedLLMServiceServer
-	providers ProviderStore
-	models    ModelStore
-	httpClient HTTPClient
+type authorizationClient interface {
+	Check(ctx context.Context, in *authorizationv1.CheckRequest, opts ...grpc.CallOption) (*authorizationv1.CheckResponse, error)
+	Write(ctx context.Context, in *authorizationv1.WriteRequest, opts ...grpc.CallOption) (*authorizationv1.WriteResponse, error)
 }
 
-func New(providers ProviderStore, models ModelStore, httpClient HTTPClient) *Server {
+type Server struct {
+	llmv1.UnimplementedLLMServiceServer
+	providers     ProviderStore
+	models        ModelStore
+	authorization authorizationClient
+	httpClient    HTTPClient
+}
+
+const (
+	identityObjectPrefix     = "identity:"
+	organizationObjectPrefix = "organization:"
+	modelObjectPrefix        = "model:"
+)
+
+func New(providers ProviderStore, models ModelStore, authorization authorizationClient, httpClient HTTPClient) *Server {
+	if authorization == nil {
+		panic("authorization client is required")
+	}
 	if httpClient == nil {
 		panic("http client is required")
 	}
-	return &Server{providers: providers, models: models, httpClient: httpClient}
+	return &Server{providers: providers, models: models, authorization: authorization, httpClient: httpClient}
 }
 
 func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProviderRequest) (*llmv1.CreateLLMProviderResponse, error) {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireOrgOwner(ctx, caller.IdentityID, organizationID); err != nil {
 		return nil, err
 	}
 
@@ -85,7 +109,8 @@ func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProv
 }
 
 func (s *Server) GetLLMProvider(ctx context.Context, req *llmv1.GetLLMProviderRequest) (*llmv1.GetLLMProviderResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -97,16 +122,27 @@ func (s *Server) GetLLMProvider(ctx context.Context, req *llmv1.GetLLMProviderRe
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	if err := s.requireOrgMember(ctx, caller.IdentityID, prov.OrganizationID); err != nil {
+		return nil, err
+	}
 	return &llmv1.GetLLMProviderResponse{Provider: toProtoProvider(prov)}, nil
 }
 
 func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProviderRequest) (*llmv1.UpdateLLMProviderResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
+		return nil, err
+	}
+	prov, err := s.providers.Get(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.requireOrgOwner(ctx, caller.IdentityID, prov.OrganizationID); err != nil {
 		return nil, err
 	}
 
@@ -149,12 +185,20 @@ func (s *Server) UpdateLLMProvider(ctx context.Context, req *llmv1.UpdateLLMProv
 }
 
 func (s *Server) DeleteLLMProvider(ctx context.Context, req *llmv1.DeleteLLMProviderRequest) (*llmv1.DeleteLLMProviderResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
+		return nil, err
+	}
+	prov, err := s.providers.Get(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.requireOrgOwner(ctx, caller.IdentityID, prov.OrganizationID); err != nil {
 		return nil, err
 	}
 	if err := s.providers.Delete(ctx, id); err != nil {
@@ -164,8 +208,15 @@ func (s *Server) DeleteLLMProvider(ctx context.Context, req *llmv1.DeleteLLMProv
 }
 
 func (s *Server) ListLLMProviders(ctx context.Context, req *llmv1.ListLLMProvidersRequest) (*llmv1.ListLLMProvidersResponse, error) {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireOrgMember(ctx, caller.IdentityID, organizationID); err != nil {
 		return nil, err
 	}
 
@@ -201,8 +252,15 @@ func (s *Server) ListLLMProviders(ctx context.Context, req *llmv1.ListLLMProvide
 }
 
 func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest) (*llmv1.CreateModelResponse, error) {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireOrgOwner(ctx, caller.IdentityID, organizationID); err != nil {
 		return nil, err
 	}
 
@@ -228,12 +286,16 @@ func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	if err := s.writeModelTuple(ctx, organizationID, created.ID); err != nil {
+		return nil, err
+	}
 
 	return &llmv1.CreateModelResponse{Model: toProtoModel(created)}, nil
 }
 
 func (s *Server) GetModel(ctx context.Context, req *llmv1.GetModelRequest) (*llmv1.GetModelResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -245,16 +307,27 @@ func (s *Server) GetModel(ctx context.Context, req *llmv1.GetModelRequest) (*llm
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	if err := s.requireOrgMember(ctx, caller.IdentityID, mdl.OrganizationID); err != nil {
+		return nil, err
+	}
 	return &llmv1.GetModelResponse{Model: toProtoModel(mdl)}, nil
 }
 
 func (s *Server) UpdateModel(ctx context.Context, req *llmv1.UpdateModelRequest) (*llmv1.UpdateModelResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
 	id, err := parseUUID(req.GetId(), "id")
 	if err != nil {
+		return nil, err
+	}
+	mdl, err := s.models.Get(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.requireOrgOwner(ctx, caller.IdentityID, mdl.OrganizationID); err != nil {
 		return nil, err
 	}
 	input := model.UpdateInput{ID: id}
@@ -289,7 +362,8 @@ func (s *Server) UpdateModel(ctx context.Context, req *llmv1.UpdateModelRequest)
 }
 
 func (s *Server) DeleteModel(ctx context.Context, req *llmv1.DeleteModelRequest) (*llmv1.DeleteModelResponse, error) {
-	if _, err := identity.FromContext(ctx); err != nil {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -297,15 +371,32 @@ func (s *Server) DeleteModel(ctx context.Context, req *llmv1.DeleteModelRequest)
 	if err != nil {
 		return nil, err
 	}
+	mdl, err := s.models.Get(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.requireOrgOwner(ctx, caller.IdentityID, mdl.OrganizationID); err != nil {
+		return nil, err
+	}
 	if err := s.models.Delete(ctx, id); err != nil {
 		return nil, toStatusError(err)
+	}
+	if err := s.deleteModelTuple(ctx, mdl.OrganizationID, mdl.ID); err != nil {
+		return nil, err
 	}
 	return &llmv1.DeleteModelResponse{}, nil
 }
 
 func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (*llmv1.ListModelsResponse, error) {
+	caller, err := identity.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireOrgMember(ctx, caller.IdentityID, organizationID); err != nil {
 		return nil, err
 	}
 
@@ -489,4 +580,61 @@ func toStatusError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.Internal, err.Error())
+}
+
+func (s *Server) requireOrgOwner(ctx context.Context, identityID string, organizationID uuid.UUID) error {
+	return s.requireOrgRelation(ctx, identityID, organizationID, "owner")
+}
+
+func (s *Server) requireOrgMember(ctx context.Context, identityID string, organizationID uuid.UUID) error {
+	return s.requireOrgRelation(ctx, identityID, organizationID, "member")
+}
+
+func (s *Server) requireOrgRelation(ctx context.Context, identityID string, organizationID uuid.UUID, relation string) error {
+	resp, err := s.authorization.Check(ctx, &authorizationv1.CheckRequest{
+		TupleKey: &authorizationv1.TupleKey{
+			User:     fmt.Sprintf("%s%s", identityObjectPrefix, identityID),
+			Relation: relation,
+			Object:   fmt.Sprintf("%s%s", organizationObjectPrefix, organizationID.String()),
+		},
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "authorization check: %v", err)
+	}
+	if !resp.GetAllowed() {
+		return status.Error(codes.PermissionDenied, "permission denied")
+	}
+	return nil
+}
+
+func (s *Server) writeModelTuple(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID) error {
+	_, err := s.authorization.Write(ctx, &authorizationv1.WriteRequest{
+		Writes: []*authorizationv1.TupleKey{
+			{
+				User:     fmt.Sprintf("%s%s", organizationObjectPrefix, organizationID.String()),
+				Relation: "org",
+				Object:   fmt.Sprintf("%s%s", modelObjectPrefix, modelID.String()),
+			},
+		},
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "authorization write: %v", err)
+	}
+	return nil
+}
+
+func (s *Server) deleteModelTuple(ctx context.Context, organizationID uuid.UUID, modelID uuid.UUID) error {
+	_, err := s.authorization.Write(ctx, &authorizationv1.WriteRequest{
+		Deletes: []*authorizationv1.TupleKey{
+			{
+				User:     fmt.Sprintf("%s%s", organizationObjectPrefix, organizationID.String()),
+				Relation: "org",
+				Object:   fmt.Sprintf("%s%s", modelObjectPrefix, modelID.String()),
+			},
+		},
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "authorization write: %v", err)
+	}
+	return nil
 }
