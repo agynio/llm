@@ -287,6 +287,9 @@ func (s *Server) CreateModel(ctx context.Context, req *llmv1.CreateModelRequest)
 		return nil, toStatusError(err)
 	}
 	if err := s.writeModelTuple(ctx, organizationID, created.ID); err != nil {
+		if deleteErr := s.models.Delete(ctx, created.ID); deleteErr != nil {
+			return nil, status.Errorf(codes.Internal, "authorization write: %v; rollback model: %v", err, deleteErr)
+		}
 		return nil, err
 	}
 

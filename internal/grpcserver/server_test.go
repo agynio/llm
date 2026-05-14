@@ -146,6 +146,7 @@ type fakeModelStore struct {
 	getModel             model.Model
 	updateID             uuid.UUID
 	deleteID             uuid.UUID
+	deleteErr            error
 }
 
 func (f *fakeModelStore) Create(ctx context.Context, input model.CreateInput) (model.Model, error) {
@@ -172,6 +173,9 @@ func (f *fakeModelStore) Update(ctx context.Context, input model.UpdateInput) (m
 
 func (f *fakeModelStore) Delete(ctx context.Context, id uuid.UUID) error {
 	f.deleteID = id
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	return nil
 }
 
@@ -437,6 +441,34 @@ func TestCreateModelWritesAuthorizationTuple(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateModel: %v", err)
+	}
+}
+
+func TestCreateModelRollsBackModelWhenAuthorizationWriteFails(t *testing.T) {
+	organizationID := uuid.MustParse("ba5784ff-790c-4864-b37c-a0c40e5d78d8")
+	modelID := uuid.MustParse("1bb21ea2-03c8-453b-a0ef-c4a12f0f8f2a")
+	models := &fakeModelStore{}
+	authorization := &fakeAuthorizationClient{
+		writeFn: func(_ context.Context, req *authorizationv1.WriteRequest) (*authorizationv1.WriteResponse, error) {
+			if len(req.GetWrites()) != 1 {
+				t.Fatalf("expected 1 write, got %d", len(req.GetWrites()))
+			}
+			return nil, status.Error(codes.PermissionDenied, "authorization write denied")
+		},
+	}
+	server := New(&fakeProviderStore{}, models, authorization, http.DefaultClient)
+
+	_, err := server.CreateModel(contextWithIdentity(), &llmv1.CreateModelRequest{
+		Name:           "name",
+		LlmProviderId:  uuid.MustParse("b89fc3c9-0e60-4a74-84c0-c4f1d26c1ee1").String(),
+		RemoteName:     "remote",
+		OrganizationId: organizationID.String(),
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected internal error, got %v", status.Code(err))
+	}
+	if models.deleteID != modelID {
+		t.Fatalf("expected rollback delete for model %s, got %s", modelID, models.deleteID)
 	}
 }
 
