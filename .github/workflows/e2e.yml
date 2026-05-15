@@ -1,0 +1,20 @@
+name: E2E
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Provision cluster
+        uses: agynio/bootstrap/.github/actions/provision@main
+
+      - name: Run LLM E2E tests
+        uses: agynio/e2e/.github/actions/run-tests@main
+        with:
+          tag: svc_llm
+          include_smoke: "false"
