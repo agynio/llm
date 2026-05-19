@@ -25,8 +25,15 @@ functions:
       echo "WARNING: ArgoCD Application 'llm' not found in argocd namespace."
     fi
   patch_deployment: |-
-    echo "Patching llm deployment for DevSpace..."
-    kubectl patch deployment llm-llm -n ${LLM_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
+    deployment=$(kubectl get deployment -n ${LLM_NAMESPACE} \
+      -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm \
+      -o jsonpath='{.items[0].metadata.name}')
+    if [ -z "$deployment" ]; then
+      echo "ERROR: LLM deployment not found in namespace ${LLM_NAMESPACE}" >&2
+      exit 1
+    fi
+    echo "Patching ${deployment} deployment for DevSpace..."
+    kubectl patch deployment "$deployment" -n ${LLM_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
     spec:
       template:
         spec:
@@ -92,7 +99,7 @@ pipelines:
         echo "Waiting for llm to be healthy on :50051..."
         healthy=false
         for i in $(seq 1 60); do
-          if exec_container --label-selector=app.kubernetes.io/name=llm -n ${LLM_NAMESPACE} -- bash -c 'nc -z localhost 50051 >/dev/null 2>&1 || (echo > /dev/tcp/localhost/50051) >/dev/null 2>&1'; then
+          if exec_container --label-selector=app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm -n ${LLM_NAMESPACE} -- bash -c 'nc -z localhost 50051 >/dev/null 2>&1 || (echo > /dev/tcp/localhost/50051) >/dev/null 2>&1'; then
             healthy=true
             break
           fi
