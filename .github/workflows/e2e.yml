@@ -134,5 +134,5 @@ jobs:
           tag: svc_llm
           include_smoke: "false"
         env:
+          AGYN_MODEL_ID: source-deploy-check
           E2E_GO_TEST_RUN: TestLLMGatewayConnectEndpointPath
-          LLM_PROXY_URL: http://llm-proxy-llm-proxy.platform.svc.cluster.local:8080
