@@ -106,13 +106,15 @@ pipelines:
         echo "Waiting for llm to be healthy on :50051..."
         healthy=false
         for i in $(seq 1 60); do
-          if exec_container --label-selector=app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm -n ${LLM_NAMESPACE} -- bash -c 'nc -z localhost 50051 >/dev/null 2>&1 || (echo > /dev/tcp/localhost/50051) >/dev/null 2>&1'; then
+          if timeout 2 bash -c '</dev/tcp/127.0.0.1/50051' >/dev/null 2>&1; then
             healthy=true
             break
           fi
           sleep 2
         done
         if [ "$healthy" != "true" ]; then
+          kubectl get pods -n ${LLM_NAMESPACE} -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm -o wide >&2
+          kubectl logs -n ${LLM_NAMESPACE} -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm --tail=200 >&2
           echo "ERROR: LLM did not become healthy within 120s" >&2
           exit 1
         fi
