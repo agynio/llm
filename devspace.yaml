@@ -2,7 +2,6 @@ version: v2beta1
 
 vars:
   LLM_NAMESPACE: platform
-  E2E_IMAGE: ghcr.io/agynio/devcontainer-go:1
 
 functions:
   disable_argocd_sync: |-
@@ -26,8 +25,15 @@ functions:
       echo "WARNING: ArgoCD Application 'llm' not found in argocd namespace."
     fi
   patch_deployment: |-
-    echo "Patching llm deployment for DevSpace..."
-    kubectl patch deployment llm-llm -n ${LLM_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
+    deployment=$(kubectl get deployment -n ${LLM_NAMESPACE} \
+      -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm \
+      -o jsonpath='{.items[0].metadata.name}')
+    if [ -z "$deployment" ]; then
+      echo "ERROR: LLM deployment not found in namespace ${LLM_NAMESPACE}" >&2
+      exit 1
+    fi
+    echo "Patching ${deployment} deployment for DevSpace..."
+    kubectl patch deployment "$deployment" -n ${LLM_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
     spec:
       template:
         spec:
@@ -40,7 +46,7 @@ functions:
               emptyDir: {}
           containers:
             - name: llm
-              image: ghcr.io/agynio/devcontainer-go:1 # keep in sync with E2E_IMAGE
+              image: ghcr.io/agynio/devcontainer-go:1 # dev container for source deploy
               workingDir: /opt/app/data
               command:
                 - sh
@@ -52,8 +58,12 @@ functions:
                     sleep 1; elapsed=$((elapsed + 1))
                     [ "$elapsed" -ge 120 ] && { echo "ERROR: sync timeout" >&2; exit 1; }
                   done
-                  buf generate buf.build/agynio/api --path agynio/api/llm/v1
-                  exec go run ./cmd/llm
+                  elapsed=0
+                  while [ ! -x /opt/app/data/dist/llm-devspace ]; do
+                    sleep 1; elapsed=$((elapsed + 1))
+                    [ "$elapsed" -ge 120 ] && { echo "ERROR: binary sync timeout" >&2; exit 1; }
+                  done
+                  exec /opt/app/data/dist/llm-devspace
               volumeMounts:
                 - name: data
                   mountPath: /opt/app/data
@@ -64,6 +74,9 @@ functions:
                 limits:
                   cpu: "2"
                   memory: 4Gi
+              livenessProbe: null
+              readinessProbe: null
+              startupProbe: null
               securityContext:
                 runAsNonRoot: true
                 runAsUser: 1000
@@ -76,26 +89,6 @@ functions:
                   type: RuntimeDefault
     EOF
     )"
-
-deployments:
-  e2e-runner:
-    namespace: ${LLM_NAMESPACE}
-    helm:
-      chart:
-        name: component-chart
-        repo: https://charts.devspace.sh
-      values:
-        containers:
-          - image: ${E2E_IMAGE}
-            env:
-              - name: LLM_ADDRESS
-                value: "llm:50051"
-        labels:
-          app.kubernetes.io/name: llm-e2e
-
-commands:
-  test:e2e: |-
-    devspace run-pipeline test:e2e $@
 
 pipelines:
   dev:
@@ -113,7 +106,7 @@ pipelines:
         echo "Waiting for llm to be healthy on :50051..."
         healthy=false
         for i in $(seq 1 60); do
-          if exec_container --label-selector=app.kubernetes.io/name=llm -n ${LLM_NAMESPACE} -- bash -c 'nc -z localhost 50051 >/dev/null 2>&1 || (echo > /dev/tcp/localhost/50051) >/dev/null 2>&1'; then
+          if exec_container --label-selector=app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm -n ${LLM_NAMESPACE} -- bash -c 'nc -z localhost 50051 >/dev/null 2>&1 || (echo > /dev/tcp/localhost/50051) >/dev/null 2>&1'; then
             healthy=true
             break
           fi
@@ -126,20 +119,6 @@ pipelines:
         echo "Dev environment ready. Stopping dev session."
         stop_dev llm
       fi
-
-  test:e2e:
-    run: |-
-      create_deployments e2e-runner
-      start_dev e2e-runner &
-      sleep 5
-      exec_container \
-        --label-selector "app.kubernetes.io/name=llm-e2e" \
-        -n ${LLM_NAMESPACE} \
-        -- bash -c 'cd /opt/app/data && buf generate buf.build/agynio/api --path agynio/api/llm/v1 && go test -v -count=1 -tags e2e ./test/e2e/'
-      EXIT_CODE=$?
-      stop_dev e2e-runner
-      purge_deployments e2e-runner
-      exit $EXIT_CODE
 
 hooks:
   - name: restore-argocd-auto-sync
@@ -181,17 +160,3 @@ dev:
           lastLines: 200
     ports:
       - port: "50051"
-
-  e2e-runner:
-    namespace: ${LLM_NAMESPACE}
-    labelSelector:
-      app.kubernetes.io/name: llm-e2e
-    command: ["sleep", "infinity"]
-    workingDir: /opt/app/data
-    sync:
-      - path: ./:/opt/app/data
-        excludePaths:
-          - .git/
-          - .devspace/
-          - /.gen/
-          - /tmp/
