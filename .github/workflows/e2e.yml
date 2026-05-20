@@ -104,6 +104,24 @@ jobs:
         if: ${{ github.event_name != 'pull_request' }}
         uses: agynio/bootstrap/.github/actions/provision@main
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          version: 1.66.0
+
+      - name: Build source binary for DevSpace
+        run: |
+          set -euo pipefail
+          buf generate buf.build/agynio/api --path agynio/api/llm/v1 --path agynio/api/authorization/v1
+          mkdir -p dist
+          CGO_ENABLED=0 go build -o dist/llm-devspace ./cmd/llm
+
       - name: Setup DevSpace
         uses: agynio/e2e/.github/actions/setup-devspace@main
 

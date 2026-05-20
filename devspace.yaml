@@ -58,8 +58,12 @@ functions:
                     sleep 1; elapsed=$((elapsed + 1))
                     [ "$elapsed" -ge 120 ] && { echo "ERROR: sync timeout" >&2; exit 1; }
                   done
-                  buf generate buf.build/agynio/api --path agynio/api/llm/v1 --path agynio/api/authorization/v1
-                  exec go run ./cmd/llm
+                  elapsed=0
+                  while [ ! -x /opt/app/data/dist/llm-devspace ]; do
+                    sleep 1; elapsed=$((elapsed + 1))
+                    [ "$elapsed" -ge 120 ] && { echo "ERROR: binary sync timeout" >&2; exit 1; }
+                  done
+                  exec /opt/app/data/dist/llm-devspace
               volumeMounts:
                 - name: data
                   mountPath: /opt/app/data
