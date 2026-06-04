@@ -1,5 +1,5 @@
 nameOverride: ""
-fullnameOverride: ""
+fullnameOverride: "llm"
 
 global:
   imageRegistry: ""
@@ -39,6 +39,8 @@ podSecurityContext:
 
 securityContext:
   enabled: true
+  runAsUser: 65532
+  runAsGroup: 65532
   runAsNonRoot: true
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
@@ -150,5 +152,5 @@ llm:
   authorizationAddress: "authorization:50051"
   databaseUrl:
     value: ""
-    existingSecret: ""
-    existingSecretKey: database-url
+    existingSecret: agyn-platform-database-urls
+    existingSecretKey: llm
