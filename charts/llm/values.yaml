@@ -150,6 +150,11 @@ metrics:
 llm:
   grpcAddress: ":50051"
   authorizationAddress: "authorization:50051"
+  # Subscriptions resolve their token through Secrets, read an environment's
+  # model allowlist from Agents, and publish invalidation through Notifications.
+  secretsAddress: "secrets:50051"
+  agentsAddress: "agents:50051"
+  notificationsAddress: "notifications:50051"
   databaseUrl:
     value: ""
     existingSecret: agyn-platform-database-urls
