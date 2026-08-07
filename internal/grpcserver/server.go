@@ -44,8 +44,21 @@ type Server struct {
 	llmv1.UnimplementedLLMServiceServer
 	providers     ProviderStore
 	models        ModelStore
+	subscriptions SubscriptionStore
+	secrets       secretsClient
+	agents        agentsClient
+	notifications notificationsClient
 	authorization authorizationClient
 	httpClient    HTTPClient
+}
+
+// SubscriptionDeps are the clients the subscription surface needs. They are
+// optional so a deployment without native mode configured still starts.
+type SubscriptionDeps struct {
+	Store         SubscriptionStore
+	Secrets       secretsClient
+	Agents        agentsClient
+	Notifications notificationsClient
 }
 
 const (
@@ -62,6 +75,15 @@ func New(providers ProviderStore, models ModelStore, authorization authorization
 		panic("http client is required")
 	}
 	return &Server{providers: providers, models: models, authorization: authorization, httpClient: httpClient}
+}
+
+// WithSubscriptions wires the native-mode surface onto an existing server.
+func (s *Server) WithSubscriptions(deps SubscriptionDeps) *Server {
+	s.subscriptions = deps.Store
+	s.secrets = deps.Secrets
+	s.agents = deps.Agents
+	s.notifications = deps.Notifications
+	return s
 }
 
 func (s *Server) CreateLLMProvider(ctx context.Context, req *llmv1.CreateLLMProviderRequest) (*llmv1.CreateLLMProviderResponse, error) {
