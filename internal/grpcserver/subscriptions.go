@@ -20,52 +20,60 @@ import (
 // this service is the only thing that reads it -- the proxy and the
 // orchestrator are told, so neither carries a copy.
 type vendorBinding struct {
-	upstream       string
-	protocol       llmv1.Protocol
-	placeholderEnv string
-	// shippable is false for a vendor whose credential cannot yet be delivered
-	// to a workload; CreateSubscription refuses it rather than storing a record
-	// that can never produce a working one.
-	shippable bool
+	upstream string
+	protocol llmv1.Protocol
+	// How the placeholder reaches the container, and what its writer needs. An
+	// env kind is the orchestrator's to set on the container spec; a file kind
+	// is agynd's to write at a path only it can resolve against HOME.
+	placeholderKind     llmv1.PlaceholderKind
+	placeholderEnv      string
+	placeholderPath     string
+	placeholderContents string
 }
 
 var vendorBindings = map[subscription.Vendor]vendorBinding{
-	subscription.VendorClaude: {
-		upstream:       "https://api.anthropic.com",
-		protocol:       llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES,
-		placeholderEnv: "CLAUDE_CODE_OAUTH_TOKEN",
-		shippable:      true,
+	subscription.VendorAnthropic: {
+		upstream:        "https://api.anthropic.com",
+		protocol:        llmv1.Protocol_PROTOCOL_ANTHROPIC_MESSAGES,
+		placeholderKind: llmv1.PlaceholderKind_PLACEHOLDER_KIND_ENV,
+		placeholderEnv:  "CLAUDE_CODE_OAUTH_TOKEN",
 	},
-	// The variable a Codex CLI reads (OPENAI_API_KEY) selects its API-key mode,
-	// and a Codex CLI in API-key mode addresses api.openai.com rather than the
-	// chatgpt.com this row intercepts. Its subscription credential lives in
-	// ~/.codex/auth.json, and the placeholder mechanism delivers environment
-	// variables only. The row records the intended binding; nothing can create
-	// a record that would produce a working workload.
-	subscription.VendorCodex: {
-		upstream:  "https://chatgpt.com/backend-api/codex",
-		protocol:  llmv1.Protocol_PROTOCOL_RESPONSES,
-		shippable: false,
+	// A subscription-mode Codex CLI calls chatgpt.com/backend-api/codex, which
+	// is why this intercepts chatgpt.com rather than api.openai.com -- the
+	// latter is where an API-key Codex CLI goes, and pairing that host with a
+	// subscription credential is what made an earlier version incoherent.
+	//
+	// Its credential is read from a file, not an environment variable, so the
+	// placeholder is one agynd writes. The contents only have to be shaped
+	// enough for the CLI to start: the proxy replaces the header built from it.
+	subscription.VendorOpenAI: {
+		upstream:            "https://chatgpt.com/backend-api/codex",
+		protocol:            llmv1.Protocol_PROTOCOL_RESPONSES,
+		placeholderKind:     llmv1.PlaceholderKind_PLACEHOLDER_KIND_FILE,
+		placeholderPath:     ".codex/auth.json",
+		placeholderContents: `{"OPENAI_API_KEY":null,"tokens":{"access_token":"agyn-placeholder-not-a-credential","account_id":"agyn-placeholder"},"last_refresh":"2026-01-01T00:00:00Z"}`,
 	},
 }
 
 func parseVendor(value llmv1.Vendor) (subscription.Vendor, error) {
+	// The enum carries the old names as aliases on the same numbers, so a
+	// caller compiled before the rename lands here identically.
 	switch value {
-	case llmv1.Vendor_VENDOR_CLAUDE:
-		return subscription.VendorClaude, nil
-	case llmv1.Vendor_VENDOR_CODEX:
-		return subscription.VendorCodex, nil
+	case llmv1.Vendor_VENDOR_ANTHROPIC:
+		return subscription.VendorAnthropic, nil
+	case llmv1.Vendor_VENDOR_OPENAI:
+		return subscription.VendorOpenAI, nil
 	default:
-		return "", status.Error(codes.InvalidArgument, "vendor must be claude or codex")
+		return "", status.Error(codes.InvalidArgument, "vendor must be anthropic or openai")
 	}
 }
 
 func toProtoVendor(value subscription.Vendor) llmv1.Vendor {
 	switch value {
-	case subscription.VendorClaude:
-		return llmv1.Vendor_VENDOR_CLAUDE
-	case subscription.VendorCodex:
-		return llmv1.Vendor_VENDOR_CODEX
+	case subscription.VendorAnthropic:
+		return llmv1.Vendor_VENDOR_ANTHROPIC
+	case subscription.VendorOpenAI:
+		return llmv1.Vendor_VENDOR_OPENAI
 	default:
 		return llmv1.Vendor_VENDOR_UNSPECIFIED
 	}
@@ -87,7 +95,10 @@ func toProtoAttachment(a subscription.Attachment) *llmv1.SubscriptionAttachment 
 		Meta:           toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
 		SubscriptionId: a.SubscriptionID.String(),
 		Vendor:         toProtoVendor(a.Vendor),
-		PlaceholderEnv: vendorBindings[a.Vendor].placeholderEnv,
+		PlaceholderKind:     vendorBindings[a.Vendor].placeholderKind,
+		PlaceholderEnv:      vendorBindings[a.Vendor].placeholderEnv,
+		PlaceholderPath:     vendorBindings[a.Vendor].placeholderPath,
+		PlaceholderContents: vendorBindings[a.Vendor].placeholderContents,
 	}
 	if a.AgentID != nil {
 		proto.Target = &llmv1.SubscriptionAttachment_AgentId{AgentId: a.AgentID.String()}
@@ -117,11 +128,6 @@ func (s *Server) CreateSubscription(ctx context.Context, req *llmv1.CreateSubscr
 	vendor, err := parseVendor(req.GetVendor())
 	if err != nil {
 		return nil, err
-	}
-	binding := vendorBindings[vendor]
-	if !binding.shippable {
-		return nil, status.Errorf(codes.Unimplemented,
-			"vendor %s has no placeholder credential the platform can deliver to a workload, so a subscription for it cannot produce a working workload", vendor)
 	}
 	secretID, err := parseUUID(req.GetSecretId(), "secret_id")
 	if err != nil {

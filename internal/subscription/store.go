@@ -14,12 +14,14 @@ import (
 )
 
 // Vendor is closed: each value fixes an intercepted host, an upstream, a
-// protocol, a header set, and the container placeholder variable name.
+// protocol, a header set, and how the placeholder credential is delivered.
+// Named after the API the credential authenticates rather than after a CLI
+// that presents it -- which CLI does is incidental and free to change.
 type Vendor string
 
 const (
-	VendorClaude Vendor = "claude"
-	VendorCodex  Vendor = "codex"
+	VendorAnthropic Vendor = "anthropic"
+	VendorOpenAI    Vendor = "openai"
 )
 
 var (

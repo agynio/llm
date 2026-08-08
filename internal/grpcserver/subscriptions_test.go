@@ -180,19 +180,71 @@ func newSubscriptionServer(store *fakeSubscriptionStore, secrets *fakeSecretsCli
 		WithSubscriptions(SubscriptionDeps{Store: store, Secrets: secrets, Agents: agents, Notifications: notifications})
 }
 
-// codex has no placeholder the platform can deliver, so a record that could
-// never produce a working workload must not be creatable.
-func TestCreateSubscriptionRefusesUnshippableVendor(t *testing.T) {
-	server := newSubscriptionServer(newFakeSubscriptionStore(), &fakeSecretsClient{exists: true}, &fakeAgentsClient{}, &fakeNotificationsClient{})
+// Both vendors are creatable. OpenAI was refused only because the placeholder
+// mechanism delivered environment variables and Codex reads a file; with the
+// file kind there is nothing left to refuse.
+func TestCreateSubscriptionAcceptsBothVendors(t *testing.T) {
+	for _, vendor := range []llmv1.Vendor{llmv1.Vendor_VENDOR_ANTHROPIC, llmv1.Vendor_VENDOR_OPENAI} {
+		server := newSubscriptionServer(newFakeSubscriptionStore(), &fakeSecretsClient{exists: true}, &fakeAgentsClient{}, &fakeNotificationsClient{})
+		resp, err := server.CreateSubscription(contextWithIdentity(), &llmv1.CreateSubscriptionRequest{
+			OrganizationId: uuid.New().String(),
+			Name:           "team-" + vendor.String(),
+			Vendor:         vendor,
+			SecretId:       uuid.New().String(),
+		})
+		if err != nil {
+			t.Fatalf("create %v subscription: %v", vendor, err)
+		}
+		if resp.GetSubscription().GetVendor() != vendor {
+			t.Fatalf("created vendor = %v, want %v", resp.GetSubscription().GetVendor(), vendor)
+		}
+	}
+}
 
-	_, err := server.CreateSubscription(contextWithIdentity(), &llmv1.CreateSubscriptionRequest{
+// The old enum names are aliases on the same numbers, so a caller compiled
+// before the rename resolves to the same vendor rather than being rejected.
+func TestCreateSubscriptionAcceptsTheDeprecatedVendorNames(t *testing.T) {
+	server := newSubscriptionServer(newFakeSubscriptionStore(), &fakeSecretsClient{exists: true}, &fakeAgentsClient{}, &fakeNotificationsClient{})
+	resp, err := server.CreateSubscription(contextWithIdentity(), &llmv1.CreateSubscriptionRequest{
 		OrganizationId: uuid.New().String(),
-		Name:           "team-codex",
-		Vendor:         llmv1.Vendor_VENDOR_CODEX,
+		Name:           "legacy-caller",
+		Vendor:         llmv1.Vendor_VENDOR_CLAUDE,
 		SecretId:       uuid.New().String(),
 	})
-	if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("expected unimplemented, got %v", err)
+	if err != nil {
+		t.Fatalf("create with the deprecated name: %v", err)
+	}
+	if resp.GetSubscription().GetVendor() != llmv1.Vendor_VENDOR_ANTHROPIC {
+		t.Fatalf("vendor = %v, want anthropic", resp.GetSubscription().GetVendor())
+	}
+}
+
+// Each vendor reports one delivery mechanism with everything its writer needs,
+// so neither the orchestrator nor agynd holds a vendor table of its own.
+func TestAttachmentReportsThePlaceholderItsWriterNeeds(t *testing.T) {
+	cases := []struct {
+		vendor   subscription.Vendor
+		kind     llmv1.PlaceholderKind
+		wantEnv  bool
+		wantFile bool
+	}{
+		{subscription.VendorAnthropic, llmv1.PlaceholderKind_PLACEHOLDER_KIND_ENV, true, false},
+		{subscription.VendorOpenAI, llmv1.PlaceholderKind_PLACEHOLDER_KIND_FILE, false, true},
+	}
+	for _, tc := range cases {
+		proto := toProtoAttachment(subscription.Attachment{Vendor: tc.vendor})
+		if proto.GetPlaceholderKind() != tc.kind {
+			t.Fatalf("%s placeholder kind = %v, want %v", tc.vendor, proto.GetPlaceholderKind(), tc.kind)
+		}
+		if (proto.GetPlaceholderEnv() != "") != tc.wantEnv {
+			t.Fatalf("%s placeholder_env = %q", tc.vendor, proto.GetPlaceholderEnv())
+		}
+		if (proto.GetPlaceholderPath() != "") != tc.wantFile {
+			t.Fatalf("%s placeholder_path = %q", tc.vendor, proto.GetPlaceholderPath())
+		}
+		if (proto.GetPlaceholderContents() != "") != tc.wantFile {
+			t.Fatalf("%s placeholder_contents = %q", tc.vendor, proto.GetPlaceholderContents())
+		}
 	}
 }
 
@@ -202,7 +254,7 @@ func TestCreateSubscriptionRejectsMissingSecret(t *testing.T) {
 	_, err := server.CreateSubscription(contextWithIdentity(), &llmv1.CreateSubscriptionRequest{
 		OrganizationId: uuid.New().String(),
 		Name:           "team-claude",
-		Vendor:         llmv1.Vendor_VENDOR_CLAUDE,
+		Vendor:         llmv1.Vendor_VENDOR_ANTHROPIC,
 		SecretId:       uuid.New().String(),
 	})
 	if status.Code(err) != codes.InvalidArgument {
@@ -221,7 +273,7 @@ func TestSubscriptionWritesPublishToBothRooms(t *testing.T) {
 	if _, err := server.CreateSubscription(contextWithIdentity(), &llmv1.CreateSubscriptionRequest{
 		OrganizationId: organizationID.String(),
 		Name:           "team-claude",
-		Vendor:         llmv1.Vendor_VENDOR_CLAUDE,
+		Vendor:         llmv1.Vendor_VENDOR_ANTHROPIC,
 		SecretId:       uuid.New().String(),
 	}); err != nil {
 		t.Fatalf("create subscription: %v", err)
@@ -256,11 +308,11 @@ func TestDeleteSubscriptionNamesItsAttachments(t *testing.T) {
 	environmentID := uuid.New()
 
 	sub, _ := store.Create(context.Background(), subscription.CreateInput{
-		OrganizationID: organizationID, Name: "team-claude", Vendor: subscription.VendorClaude, SecretID: uuid.New(),
+		OrganizationID: organizationID, Name: "team-claude", Vendor: subscription.VendorAnthropic, SecretID: uuid.New(),
 	})
 	store.attachments = append(store.attachments, subscription.Attachment{
 		ID: uuid.New(), OrganizationID: organizationID, SubscriptionID: sub.ID,
-		Vendor: subscription.VendorClaude, EnvironmentID: &environmentID,
+		Vendor: subscription.VendorAnthropic, EnvironmentID: &environmentID,
 	})
 
 	_, err := server.DeleteSubscription(contextWithIdentity(), &llmv1.DeleteSubscriptionRequest{Id: sub.ID.String()})
@@ -301,16 +353,16 @@ func TestResolveSubscriptionReturnsBindingAndAllowlist(t *testing.T) {
 	environmentID := uuid.New()
 
 	sub, _ := store.Create(context.Background(), subscription.CreateInput{
-		OrganizationID: organizationID, Name: "team-claude", Vendor: subscription.VendorClaude, SecretID: uuid.New(),
+		OrganizationID: organizationID, Name: "team-claude", Vendor: subscription.VendorAnthropic, SecretID: uuid.New(),
 	})
 	store.attachments = append(store.attachments, subscription.Attachment{
 		ID: uuid.New(), OrganizationID: organizationID, SubscriptionID: sub.ID,
-		Vendor: subscription.VendorClaude, EnvironmentID: &environmentID,
+		Vendor: subscription.VendorAnthropic, EnvironmentID: &environmentID,
 	})
 
 	resp, err := server.ResolveSubscription(context.Background(), &llmv1.ResolveSubscriptionRequest{
 		EnvironmentId: environmentID.String(),
-		Vendor:        llmv1.Vendor_VENDOR_CLAUDE,
+		Vendor:        llmv1.Vendor_VENDOR_ANTHROPIC,
 	})
 	if err != nil {
 		t.Fatalf("resolve subscription: %v", err)
@@ -338,7 +390,7 @@ func TestResolveSubscriptionNotFoundForUnattachedVendor(t *testing.T) {
 
 	_, err := server.ResolveSubscription(context.Background(), &llmv1.ResolveSubscriptionRequest{
 		EnvironmentId: uuid.New().String(),
-		Vendor:        llmv1.Vendor_VENDOR_CLAUDE,
+		Vendor:        llmv1.Vendor_VENDOR_ANTHROPIC,
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected not found, got %v", err)
@@ -354,11 +406,11 @@ func TestListAttachmentsCarriesVendorAndPlaceholder(t *testing.T) {
 	environmentID := uuid.New()
 
 	sub, _ := store.Create(context.Background(), subscription.CreateInput{
-		OrganizationID: organizationID, Name: "team-claude", Vendor: subscription.VendorClaude, SecretID: uuid.New(),
+		OrganizationID: organizationID, Name: "team-claude", Vendor: subscription.VendorAnthropic, SecretID: uuid.New(),
 	})
 	store.attachments = append(store.attachments, subscription.Attachment{
 		ID: uuid.New(), OrganizationID: organizationID, SubscriptionID: sub.ID,
-		Vendor: subscription.VendorClaude, EnvironmentID: &environmentID,
+		Vendor: subscription.VendorAnthropic, EnvironmentID: &environmentID,
 	})
 
 	resp, err := server.ListSubscriptionAttachments(contextWithIdentity(), &llmv1.ListSubscriptionAttachmentsRequest{
@@ -371,7 +423,7 @@ func TestListAttachmentsCarriesVendorAndPlaceholder(t *testing.T) {
 		t.Fatalf("expected 1 attachment, got %d", len(resp.GetSubscriptionAttachments()))
 	}
 	got := resp.GetSubscriptionAttachments()[0]
-	if got.GetVendor() != llmv1.Vendor_VENDOR_CLAUDE {
+	if got.GetVendor() != llmv1.Vendor_VENDOR_ANTHROPIC {
 		t.Fatalf("unexpected vendor %v", got.GetVendor())
 	}
 	if got.GetPlaceholderEnv() != "CLAUDE_CODE_OAUTH_TOKEN" {
