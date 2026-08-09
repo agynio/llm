@@ -31,7 +31,7 @@ jobs:
           version: 1.66.0
 
       - name: Generate protobuf stubs
-        run: buf generate buf.build/agynio/api --path agynio/api/llm/v1
+        run: buf generate buf.build/agynio/api --path agynio/api/llm/v1 --path agynio/api/agents/v1 --path agynio/api/notifications/v1 --path agynio/api/secrets/v1
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
