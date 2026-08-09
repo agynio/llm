@@ -433,3 +433,19 @@ func TestListAttachmentsCarriesVendorAndPlaceholder(t *testing.T) {
 		t.Fatalf("unexpected target %v", got.GetTarget())
 	}
 }
+
+// The Orchestrator lists attachments at workload assembly, acting for the
+// platform rather than for a principal, so it sends no caller identity -- the
+// same way it calls Runners and Agents. Requiring one failed every native-mode
+// sandbox with "identity id is required".
+func TestListSubscriptionAttachmentsServesAPlatformCall(t *testing.T) {
+	store := newFakeSubscriptionStore()
+	server := newSubscriptionServer(store, &fakeSecretsClient{exists: true}, &fakeAgentsClient{}, &fakeNotificationsClient{})
+
+	_, err := server.ListSubscriptionAttachments(context.Background(), &llmv1.ListSubscriptionAttachmentsRequest{
+		OrganizationId: uuid.New().String(),
+	})
+	if err != nil {
+		t.Fatalf("list without a caller identity: %v", err)
+	}
+}

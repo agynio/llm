@@ -111,16 +111,18 @@ func (s *Server) DeleteSubscriptionAttachment(ctx context.Context, req *llmv1.De
 }
 
 func (s *Server) ListSubscriptionAttachments(ctx context.Context, req *llmv1.ListSubscriptionAttachmentsRequest) (*llmv1.ListSubscriptionAttachmentsResponse, error) {
-	caller, err := identity.FromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
 	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
 	if err != nil {
 		return nil, err
 	}
-	if err := s.requireOrgMember(ctx, caller.IdentityID, organizationID); err != nil {
-		return nil, err
+	// An absent caller identity is a platform call, the same way Runners and
+	// Agents read one: the Gateway always attaches an identity, so only an
+	// internal service arrives without. The Orchestrator needs this at workload
+	// assembly, where it acts for the platform rather than for a principal.
+	if caller, err := identity.FromContext(ctx); err == nil {
+		if err := s.requireOrgMember(ctx, caller.IdentityID, organizationID); err != nil {
+			return nil, err
+		}
 	}
 
 	filter := subscription.AttachmentFilter{OrganizationID: organizationID}
