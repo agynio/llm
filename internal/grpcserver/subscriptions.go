@@ -92,9 +92,9 @@ func toProtoSubscription(sub subscription.Subscription) *llmv1.Subscription {
 
 func toProtoAttachment(a subscription.Attachment) *llmv1.SubscriptionAttachment {
 	proto := &llmv1.SubscriptionAttachment{
-		Meta:           toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
-		SubscriptionId: a.SubscriptionID.String(),
-		Vendor:         toProtoVendor(a.Vendor),
+		Meta:                toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
+		SubscriptionId:      a.SubscriptionID.String(),
+		Vendor:              toProtoVendor(a.Vendor),
 		PlaceholderKind:     vendorBindings[a.Vendor].placeholderKind,
 		PlaceholderEnv:      vendorBindings[a.Vendor].placeholderEnv,
 		PlaceholderPath:     vendorBindings[a.Vendor].placeholderPath,
