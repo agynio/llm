@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
 	"github.com/agynio/llm/internal/identity"
@@ -25,10 +26,12 @@ type vendorBinding struct {
 	// How the placeholder reaches the container, and what its writer needs. An
 	// env kind is the orchestrator's to set on the container spec; a file kind
 	// is agynd's to write at a path only it can resolve against HOME.
-	placeholderKind     llmv1.PlaceholderKind
-	placeholderEnv      string
-	placeholderPath     string
-	placeholderContents string
+	placeholderKind llmv1.PlaceholderKind
+	placeholderEnv  string
+	placeholderPath string
+	// Built per attachment rather than stored: the contents carry a timestamp
+	// the CLI reads as the credential's age.
+	placeholderContents func(time.Time) string
 }
 
 var vendorBindings = map[subscription.Vendor]vendorBinding{
@@ -51,7 +54,7 @@ var vendorBindings = map[subscription.Vendor]vendorBinding{
 		protocol:            llmv1.Protocol_PROTOCOL_RESPONSES,
 		placeholderKind:     llmv1.PlaceholderKind_PLACEHOLDER_KIND_FILE,
 		placeholderPath:     ".codex/auth.json",
-		placeholderContents: `{"OPENAI_API_KEY":null,"tokens":{"access_token":"agyn-placeholder-not-a-credential","account_id":"agyn-placeholder"},"last_refresh":"2026-01-01T00:00:00Z"}`,
+		placeholderContents: codexPlaceholderAuth,
 	},
 }
 
@@ -92,13 +95,15 @@ func toProtoSubscription(sub subscription.Subscription) *llmv1.Subscription {
 
 func toProtoAttachment(a subscription.Attachment) *llmv1.SubscriptionAttachment {
 	proto := &llmv1.SubscriptionAttachment{
-		Meta:           toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
-		SubscriptionId: a.SubscriptionID.String(),
-		Vendor:         toProtoVendor(a.Vendor),
-		PlaceholderKind:     vendorBindings[a.Vendor].placeholderKind,
-		PlaceholderEnv:      vendorBindings[a.Vendor].placeholderEnv,
-		PlaceholderPath:     vendorBindings[a.Vendor].placeholderPath,
-		PlaceholderContents: vendorBindings[a.Vendor].placeholderContents,
+		Meta:            toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
+		SubscriptionId:  a.SubscriptionID.String(),
+		Vendor:          toProtoVendor(a.Vendor),
+		PlaceholderKind: vendorBindings[a.Vendor].placeholderKind,
+		PlaceholderEnv:  vendorBindings[a.Vendor].placeholderEnv,
+		PlaceholderPath: vendorBindings[a.Vendor].placeholderPath,
+	}
+	if contents := vendorBindings[a.Vendor].placeholderContents; contents != nil {
+		proto.PlaceholderContents = contents(time.Now())
 	}
 	if a.AgentID != nil {
 		proto.Target = &llmv1.SubscriptionAttachment_AgentId{AgentId: a.AgentID.String()}
