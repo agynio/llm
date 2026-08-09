@@ -219,32 +219,23 @@ func TestCreateSubscriptionAcceptsTheDeprecatedVendorNames(t *testing.T) {
 	}
 }
 
-// Each vendor reports one delivery mechanism with everything its writer needs,
-// so neither the orchestrator nor agynd holds a vendor table of its own.
-func TestAttachmentReportsThePlaceholderItsWriterNeeds(t *testing.T) {
-	cases := []struct {
-		vendor   subscription.Vendor
-		kind     llmv1.PlaceholderKind
-		wantEnv  bool
-		wantFile bool
-	}{
-		{subscription.VendorAnthropic, llmv1.PlaceholderKind_PLACEHOLDER_KIND_ENV, true, false},
-		{subscription.VendorOpenAI, llmv1.PlaceholderKind_PLACEHOLDER_KIND_FILE, false, true},
+// Only the environment-variable kind is reported, and only because the
+// orchestrator sets it on the container spec without knowing the CLI. A
+// file-reading CLI is agynd's to serve outright.
+func TestAttachmentReportsOnlyTheVariableItsWriterNeeds(t *testing.T) {
+	anthropic := toProtoAttachment(subscription.Attachment{Vendor: subscription.VendorAnthropic})
+	if anthropic.GetPlaceholderKind() != llmv1.PlaceholderKind_PLACEHOLDER_KIND_ENV {
+		t.Fatalf("anthropic kind = %v", anthropic.GetPlaceholderKind())
 	}
-	for _, tc := range cases {
-		proto := toProtoAttachment(subscription.Attachment{Vendor: tc.vendor})
-		if proto.GetPlaceholderKind() != tc.kind {
-			t.Fatalf("%s placeholder kind = %v, want %v", tc.vendor, proto.GetPlaceholderKind(), tc.kind)
-		}
-		if (proto.GetPlaceholderEnv() != "") != tc.wantEnv {
-			t.Fatalf("%s placeholder_env = %q", tc.vendor, proto.GetPlaceholderEnv())
-		}
-		if (proto.GetPlaceholderPath() != "") != tc.wantFile {
-			t.Fatalf("%s placeholder_path = %q", tc.vendor, proto.GetPlaceholderPath())
-		}
-		if (proto.GetPlaceholderContents() != "") != tc.wantFile {
-			t.Fatalf("%s placeholder_contents = %q", tc.vendor, proto.GetPlaceholderContents())
-		}
+	if anthropic.GetPlaceholderEnv() == "" {
+		t.Fatal("anthropic placeholder_env is empty")
+	}
+
+	// Nothing about the Codex CLI's auth.json is this service's to declare.
+	openai := toProtoAttachment(subscription.Attachment{Vendor: subscription.VendorOpenAI})
+	if openai.GetPlaceholderPath() != "" || openai.GetPlaceholderContents() != "" {
+		t.Fatalf("openai still declares a file: path=%q contents=%q",
+			openai.GetPlaceholderPath(), openai.GetPlaceholderContents())
 	}
 }
 
