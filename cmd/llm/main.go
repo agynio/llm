@@ -12,13 +12,17 @@ import (
 	"syscall"
 	"time"
 
+	agentsv1 "github.com/agynio/llm/.gen/go/agynio/api/agents/v1"
 	authorizationv1 "github.com/agynio/llm/.gen/go/agynio/api/authorization/v1"
 	llmv1 "github.com/agynio/llm/.gen/go/agynio/api/llm/v1"
+	notificationsv1 "github.com/agynio/llm/.gen/go/agynio/api/notifications/v1"
+	secretsv1 "github.com/agynio/llm/.gen/go/agynio/api/secrets/v1"
 	"github.com/agynio/llm/internal/config"
 	"github.com/agynio/llm/internal/db"
 	"github.com/agynio/llm/internal/grpcserver"
 	"github.com/agynio/llm/internal/model"
 	"github.com/agynio/llm/internal/provider"
+	"github.com/agynio/llm/internal/subscription"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -65,12 +69,35 @@ func run() error {
 	}
 	defer authorizationConn.Close()
 
+	secretsConn, err := grpc.DialContext(ctx, cfg.SecretsAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial secrets: %w", err)
+	}
+	defer secretsConn.Close()
+	agentsConn, err := grpc.DialContext(ctx, cfg.AgentsAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial agents: %w", err)
+	}
+	defer agentsConn.Close()
+	notificationsConn, err := grpc.DialContext(ctx, cfg.NotificationsAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial notifications: %w", err)
+	}
+	defer notificationsConn.Close()
+
 	grpcServer := grpc.NewServer()
 	healthServer := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus("agynio.api.llm.v1.LLMService", healthpb.HealthCheckResponse_SERVING)
-	llmv1.RegisterLLMServiceServer(grpcServer, grpcserver.New(providerStore, modelStore, authorizationv1.NewAuthorizationServiceClient(authorizationConn), http.DefaultClient))
+	llmServer := grpcserver.New(providerStore, modelStore, authorizationv1.NewAuthorizationServiceClient(authorizationConn), http.DefaultClient).
+		WithSubscriptions(grpcserver.SubscriptionDeps{
+			Store:         subscription.NewStore(pool),
+			Secrets:       secretsv1.NewSecretsServiceClient(secretsConn),
+			Agents:        agentsv1.NewAgentsServiceClient(agentsConn),
+			Notifications: notificationsv1.NewNotificationsServiceClient(notificationsConn),
+		})
+	llmv1.RegisterLLMServiceServer(grpcServer, llmServer)
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {

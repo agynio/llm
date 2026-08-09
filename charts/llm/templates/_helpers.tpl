@@ -9,6 +9,18 @@
 {{- if $authorizationAddress }}
 {{- $env = append $env (dict "name" "AUTHORIZATION_ADDRESS" "value" $authorizationAddress) -}}
 {{- end }}
+{{- $secretsAddress := trimAll " \n\t" (default "secrets:50051" .Values.llm.secretsAddress) -}}
+{{- if $secretsAddress }}
+{{- $env = append $env (dict "name" "SECRETS_ADDRESS" "value" $secretsAddress) -}}
+{{- end }}
+{{- $agentsAddress := trimAll " \n\t" (default "agents:50051" .Values.llm.agentsAddress) -}}
+{{- if $agentsAddress }}
+{{- $env = append $env (dict "name" "AGENTS_ADDRESS" "value" $agentsAddress) -}}
+{{- end }}
+{{- $notificationsAddress := trimAll " \n\t" (default "notifications:50051" .Values.llm.notificationsAddress) -}}
+{{- if $notificationsAddress }}
+{{- $env = append $env (dict "name" "NOTIFICATIONS_ADDRESS" "value" $notificationsAddress) -}}
+{{- end }}
 {{- $dbSecret := trim (default "" .Values.llm.databaseUrl.existingSecret) -}}
 {{- $dbVar := dict "name" "DATABASE_URL" -}}
 {{- if $dbSecret }}

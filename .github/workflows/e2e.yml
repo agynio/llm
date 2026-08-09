@@ -118,7 +118,7 @@ jobs:
       - name: Build source binary for DevSpace
         run: |
           set -euo pipefail
-          buf generate buf.build/agynio/api --path agynio/api/llm/v1 --path agynio/api/authorization/v1
+          buf generate buf.build/agynio/api --path agynio/api/llm/v1 --path agynio/api/authorization/v1 --path agynio/api/agents/v1 --path agynio/api/notifications/v1 --path agynio/api/secrets/v1
           mkdir -p dist
           CGO_ENABLED=0 go build -o dist/llm-devspace ./cmd/llm
 

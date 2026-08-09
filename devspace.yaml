@@ -26,7 +26,7 @@ functions:
     fi
   patch_deployment: |-
     deployment=$(kubectl get deployment -n ${LLM_NAMESPACE} \
-      -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm \
+      -l app.kubernetes.io/name=llm \
       -o jsonpath='{.items[0].metadata.name}')
     if [ -z "$deployment" ]; then
       echo "ERROR: LLM deployment not found in namespace ${LLM_NAMESPACE}" >&2
@@ -58,12 +58,13 @@ functions:
                     sleep 1; elapsed=$((elapsed + 1))
                     [ "$elapsed" -ge 120 ] && { echo "ERROR: sync timeout" >&2; exit 1; }
                   done
-                  elapsed=0
-                  while [ ! -x /opt/app/data/dist/llm-devspace ]; do
-                    sleep 1; elapsed=$((elapsed + 1))
-                    [ "$elapsed" -ge 120 ] && { echo "ERROR: binary sync timeout" >&2; exit 1; }
-                  done
-                  exec /opt/app/data/dist/llm-devspace
+                  buf generate buf.build/agynio/api \
+                    --path agynio/api/llm/v1 \
+                    --path agynio/api/agents/v1 \
+                    --path agynio/api/authorization/v1 \
+                    --path agynio/api/notifications/v1 \
+                    --path agynio/api/secrets/v1
+                  exec go run ./cmd/llm
               volumeMounts:
                 - name: data
                   mountPath: /opt/app/data
@@ -113,8 +114,8 @@ pipelines:
           sleep 2
         done
         if [ "$healthy" != "true" ]; then
-          kubectl get pods -n ${LLM_NAMESPACE} -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm -o wide >&2
-          kubectl logs -n ${LLM_NAMESPACE} -l app.kubernetes.io/name=llm,app.kubernetes.io/instance=llm --tail=200 >&2
+          kubectl get pods -n ${LLM_NAMESPACE} -l app.kubernetes.io/name=llm -o wide >&2
+          kubectl logs -n ${LLM_NAMESPACE} -l app.kubernetes.io/name=llm --tail=200 >&2
           echo "ERROR: LLM did not become healthy within 120s" >&2
           exit 1
         fi
@@ -135,8 +136,10 @@ dev:
   llm:
     namespace: ${LLM_NAMESPACE}
     labelSelector:
+      # Name only: the release name differs between the umbrella (agyn-platform)
+      # and the bootstrap stack, so pinning the instance label matches in one
+      # environment and finds nothing in the other.
       app.kubernetes.io/name: llm
-      app.kubernetes.io/instance: llm
     containers:
       llm:
         container: llm
