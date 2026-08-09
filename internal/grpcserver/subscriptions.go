@@ -45,8 +45,12 @@ var vendorBindings = map[subscription.Vendor]vendorBinding{
 	// Its credential is read from a file whose path and shape are the Codex
 	// CLI's, not OpenAI's -- so agynd writes it, and nothing about it is
 	// declared here.
+	//
+	// The origin only. The proxy appends the caller's own path, and the CLI
+	// already addresses /backend-api/codex/responses -- carrying that prefix
+	// here too would forward it twice.
 	subscription.VendorOpenAI: {
-		upstream: "https://chatgpt.com/backend-api/codex",
+		upstream: "https://chatgpt.com",
 		protocol: llmv1.Protocol_PROTOCOL_RESPONSES,
 	},
 }
