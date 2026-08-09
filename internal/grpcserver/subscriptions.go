@@ -22,13 +22,12 @@ import (
 type vendorBinding struct {
 	upstream string
 	protocol llmv1.Protocol
-	// How the placeholder reaches the container, and what its writer needs. An
-	// env kind is the orchestrator's to set on the container spec; a file kind
-	// is agynd's to write at a path only it can resolve against HOME.
-	placeholderKind     llmv1.PlaceholderKind
-	placeholderEnv      string
-	placeholderPath     string
-	placeholderContents string
+	// How the placeholder reaches the container. Only the env kind is named
+	// here, and only because the orchestrator sets it on the container spec and
+	// has no way to know the CLI. A file kind is agynd's outright: its path and
+	// contents follow from the CLI, which this service never learns.
+	placeholderKind llmv1.PlaceholderKind
+	placeholderEnv  string
 }
 
 var vendorBindings = map[subscription.Vendor]vendorBinding{
@@ -43,15 +42,12 @@ var vendorBindings = map[subscription.Vendor]vendorBinding{
 	// latter is where an API-key Codex CLI goes, and pairing that host with a
 	// subscription credential is what made an earlier version incoherent.
 	//
-	// Its credential is read from a file, not an environment variable, so the
-	// placeholder is one agynd writes. The contents only have to be shaped
-	// enough for the CLI to start: the proxy replaces the header built from it.
+	// Its credential is read from a file whose path and shape are the Codex
+	// CLI's, not OpenAI's -- so agynd writes it, and nothing about it is
+	// declared here.
 	subscription.VendorOpenAI: {
-		upstream:            "https://chatgpt.com/backend-api/codex",
-		protocol:            llmv1.Protocol_PROTOCOL_RESPONSES,
-		placeholderKind:     llmv1.PlaceholderKind_PLACEHOLDER_KIND_FILE,
-		placeholderPath:     ".codex/auth.json",
-		placeholderContents: `{"OPENAI_API_KEY":null,"tokens":{"access_token":"agyn-placeholder-not-a-credential","account_id":"agyn-placeholder"},"last_refresh":"2026-01-01T00:00:00Z"}`,
+		upstream: "https://chatgpt.com/backend-api/codex",
+		protocol: llmv1.Protocol_PROTOCOL_RESPONSES,
 	},
 }
 
@@ -92,13 +88,11 @@ func toProtoSubscription(sub subscription.Subscription) *llmv1.Subscription {
 
 func toProtoAttachment(a subscription.Attachment) *llmv1.SubscriptionAttachment {
 	proto := &llmv1.SubscriptionAttachment{
-		Meta:                toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
-		SubscriptionId:      a.SubscriptionID.String(),
-		Vendor:              toProtoVendor(a.Vendor),
-		PlaceholderKind:     vendorBindings[a.Vendor].placeholderKind,
-		PlaceholderEnv:      vendorBindings[a.Vendor].placeholderEnv,
-		PlaceholderPath:     vendorBindings[a.Vendor].placeholderPath,
-		PlaceholderContents: vendorBindings[a.Vendor].placeholderContents,
+		Meta:            toProtoMeta(a.ID, a.CreatedAt, a.CreatedAt),
+		SubscriptionId:  a.SubscriptionID.String(),
+		Vendor:          toProtoVendor(a.Vendor),
+		PlaceholderKind: vendorBindings[a.Vendor].placeholderKind,
+		PlaceholderEnv:  vendorBindings[a.Vendor].placeholderEnv,
 	}
 	if a.AgentID != nil {
 		proto.Target = &llmv1.SubscriptionAttachment_AgentId{AgentId: a.AgentID.String()}
