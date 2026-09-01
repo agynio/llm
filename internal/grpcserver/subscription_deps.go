@@ -33,6 +33,8 @@ type SubscriptionStore interface {
 	ListAttachments(ctx context.Context, filter subscription.AttachmentFilter, pageSize int32, cursor *subscription.PageCursor) (subscription.AttachmentListResult, error)
 	Resolve(ctx context.Context, agentID *uuid.UUID, environmentID uuid.UUID, vendor subscription.Vendor) (subscription.Subscription, error)
 	CountReferencingSecret(ctx context.Context, secretID uuid.UUID) ([]uuid.UUID, error)
+	DeleteByOrganization(ctx context.Context, organizationID uuid.UUID) error
+	DeleteAttachmentsByOrganization(ctx context.Context, organizationID uuid.UUID) error
 }
 
 type secretsClient interface {

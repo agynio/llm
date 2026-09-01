@@ -1,0 +1,31 @@
+{{- if .Values.internalAuthorizationPolicy.enabled }}
+{{- $namespace := .Release.Namespace }}
+# DeleteOrganizationResources is one step of the organization teardown. It has
+# no caller identity to authorize, so who may reach it at all is settled here.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Release.Name }}-internal-llm
+  labels:
+    app.kubernetes.io/name: {{ include "service-base.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "service-base.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  action: DENY
+  rules:
+    - from:
+        - source:
+            notPrincipals:
+{{- range .Values.internalAuthorizationPolicy.serviceAccounts }}
+              - "cluster.local/ns/{{ .namespace | default $namespace }}/sa/{{ .name }}"
+{{- end }}
+      to:
+        - operation:
+            methods:
+              - POST
+            paths:
+              - /agynio.api.llm.v1.LLMService/DeleteOrganizationResources
+{{- end }}
