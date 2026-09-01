@@ -159,3 +159,9 @@ llm:
     value: ""
     existingSecret: agyn-platform-database-urls
     existingSecretKey: llm
+
+internalAuthorizationPolicy:
+  enabled: true
+  serviceAccounts:
+    - name: organizations
+      namespace: ""

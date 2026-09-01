@@ -25,6 +25,7 @@ type ProviderStore interface {
 	Update(ctx context.Context, input provider.UpdateInput) (provider.Provider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, organizationID uuid.UUID, pageSize int32, cursor *provider.PageCursor) (provider.ListResult, error)
+	DeleteByOrganization(ctx context.Context, organizationID uuid.UUID) error
 }
 
 type ModelStore interface {
@@ -33,6 +34,7 @@ type ModelStore interface {
 	Update(ctx context.Context, input model.UpdateInput) (model.Model, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, organizationID uuid.UUID, filter model.ListFilter, pageSize int32, cursor *model.PageCursor) (model.ListResult, error)
+	ListIDsByOrganization(ctx context.Context, organizationID uuid.UUID) ([]uuid.UUID, error)
 }
 
 type authorizationClient interface {
@@ -662,4 +664,48 @@ func (s *Server) deleteModelTuple(ctx context.Context, organizationID uuid.UUID,
 		return status.Errorf(codes.Internal, "authorization write: %v", err)
 	}
 	return nil
+}
+
+// DeleteOrganizationResources removes the organization's subscription
+// attachments, subscriptions, models, and providers, in that order -- each of
+// the first three is referenced by the one before it. It is internal: Istio
+// settles who may call it, so there is no permission check and no caller
+// identity to check against. Step 6 of the organization teardown, after the
+// environments, MCPs, and agents that named these models.
+//
+// Idempotent by construction: a retried step finds nothing left and succeeds.
+func (s *Server) DeleteOrganizationResources(ctx context.Context, req *llmv1.DeleteOrganizationResourcesRequest) (*llmv1.DeleteOrganizationResourcesResponse, error) {
+	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
+	if err != nil {
+		return nil, err
+	}
+
+	// Subscriptions are optional deps: a deployment without native mode
+	// configured has no store to clear.
+	if s.subscriptions != nil {
+		if err := s.subscriptions.DeleteAttachmentsByOrganization(ctx, organizationID); err != nil {
+			return nil, toStatusError(err)
+		}
+		if err := s.subscriptions.DeleteByOrganization(ctx, organizationID); err != nil {
+			return nil, toStatusError(err)
+		}
+	}
+
+	modelIDs, err := s.models.ListIDsByOrganization(ctx, organizationID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	for _, modelID := range modelIDs {
+		if err := s.models.Delete(ctx, modelID); err != nil {
+			return nil, toStatusError(err)
+		}
+		if err := s.deleteModelTuple(ctx, organizationID, modelID); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.providers.DeleteByOrganization(ctx, organizationID); err != nil {
+		return nil, toStatusError(err)
+	}
+	return &llmv1.DeleteOrganizationResourcesResponse{}, nil
 }

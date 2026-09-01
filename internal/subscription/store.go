@@ -201,6 +201,13 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// DeleteByOrganization removes the organization's subscriptions. Attachments
+// reference them, so this only succeeds once the attachments are gone.
+func (s *Store) DeleteByOrganization(ctx context.Context, organizationID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM subscriptions WHERE organization_id = $1`, organizationID)
+	return err
+}
+
 func (s *Store) List(ctx context.Context, organizationID uuid.UUID, pageSize int32, cursor *PageCursor) (ListResult, error) {
 	limit := normalizePageSize(pageSize)
 

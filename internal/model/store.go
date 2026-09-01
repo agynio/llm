@@ -125,6 +125,30 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// ListIDsByOrganization returns every model id the organization holds,
+// unpaginated. The teardown needs all of them, and each one carries an
+// OpenFGA tuple that has to come off with the row.
+func (s *Store) ListIDsByOrganization(ctx context.Context, organizationID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM models WHERE organization_id = $1`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 func (s *Store) List(ctx context.Context, organizationID uuid.UUID, filter ListFilter, pageSize int32, cursor *PageCursor) (ListResult, error) {
 	limit := normalizePageSize(pageSize)
 

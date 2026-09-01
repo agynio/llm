@@ -22,6 +22,8 @@ type fakeSubscriptionStore struct {
 	attachErr     error
 	created       *subscription.CreateInput
 	deleted       []uuid.UUID
+	deletedOrgs   []uuid.UUID
+	detachedOrgs  []uuid.UUID
 }
 
 func newFakeSubscriptionStore() *fakeSubscriptionStore {
@@ -71,6 +73,22 @@ func (f *fakeSubscriptionStore) Update(_ context.Context, input subscription.Upd
 func (f *fakeSubscriptionStore) Delete(_ context.Context, id uuid.UUID) error {
 	f.deleted = append(f.deleted, id)
 	delete(f.subscriptions, id)
+	return nil
+}
+
+func (f *fakeSubscriptionStore) DeleteByOrganization(_ context.Context, organizationID uuid.UUID) error {
+	f.deletedOrgs = append(f.deletedOrgs, organizationID)
+	for id, sub := range f.subscriptions {
+		if sub.OrganizationID == organizationID {
+			delete(f.subscriptions, id)
+		}
+	}
+	return nil
+}
+
+func (f *fakeSubscriptionStore) DeleteAttachmentsByOrganization(_ context.Context, organizationID uuid.UUID) error {
+	f.detachedOrgs = append(f.detachedOrgs, organizationID)
+	f.attachments = nil
 	return nil
 }
 

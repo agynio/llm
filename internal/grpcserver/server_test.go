@@ -49,23 +49,24 @@ func TestToStatusErrorMappings(t *testing.T) {
 }
 
 type fakeProviderStore struct {
-	createOrganizationID uuid.UUID
-	createAuthMethod     provider.AuthMethod
-	createProtocol       provider.Protocol
-	listOrganizationID   uuid.UUID
-	getID                uuid.UUID
-	getWithTokenID       uuid.UUID
-	getWithTokenOrgID    uuid.UUID
-	getWithTokenEndpoint string
-	getWithTokenToken    string
-	getWithTokenAuth     provider.AuthMethod
-	getWithTokenProtocol provider.Protocol
-	updateID             uuid.UUID
-	updateAuthMethod     provider.AuthMethod
-	updateProtocol       provider.Protocol
-	updateAuthMethodSet  bool
-	updateProtocolSet    bool
-	deleteID             uuid.UUID
+	deletedByOrganization []uuid.UUID
+	createOrganizationID  uuid.UUID
+	createAuthMethod      provider.AuthMethod
+	createProtocol        provider.Protocol
+	listOrganizationID    uuid.UUID
+	getID                 uuid.UUID
+	getWithTokenID        uuid.UUID
+	getWithTokenOrgID     uuid.UUID
+	getWithTokenEndpoint  string
+	getWithTokenToken     string
+	getWithTokenAuth      provider.AuthMethod
+	getWithTokenProtocol  provider.Protocol
+	updateID              uuid.UUID
+	updateAuthMethod      provider.AuthMethod
+	updateProtocol        provider.Protocol
+	updateAuthMethodSet   bool
+	updateProtocolSet     bool
+	deleteID              uuid.UUID
 }
 
 func (f *fakeProviderStore) Create(ctx context.Context, input provider.CreateInput) (provider.Provider, error) {
@@ -134,12 +135,19 @@ func (f *fakeProviderStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (f *fakeProviderStore) DeleteByOrganization(_ context.Context, organizationID uuid.UUID) error {
+	f.deletedByOrganization = append(f.deletedByOrganization, organizationID)
+	return nil
+}
+
 func (f *fakeProviderStore) List(ctx context.Context, organizationID uuid.UUID, pageSize int32, cursor *provider.PageCursor) (provider.ListResult, error) {
 	f.listOrganizationID = organizationID
 	return provider.ListResult{Providers: []provider.Provider{}}, nil
 }
 
 type fakeModelStore struct {
+	organizationModelIDs []uuid.UUID
+	deletedIDs           []uuid.UUID
 	createOrganizationID uuid.UUID
 	listOrganizationID   uuid.UUID
 	getID                uuid.UUID
@@ -176,7 +184,12 @@ func (f *fakeModelStore) Delete(ctx context.Context, id uuid.UUID) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
+	f.deletedIDs = append(f.deletedIDs, id)
 	return nil
+}
+
+func (f *fakeModelStore) ListIDsByOrganization(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return f.organizationModelIDs, nil
 }
 
 func (f *fakeModelStore) List(ctx context.Context, organizationID uuid.UUID, filter model.ListFilter, pageSize int32, cursor *model.PageCursor) (model.ListResult, error) {
@@ -760,5 +773,51 @@ func TestParseProtocol(t *testing.T) {
 				t.Fatalf("expected protocol %s, got %s", tc.want, protocol)
 			}
 		})
+	}
+}
+
+func TestDeleteOrganizationResourcesRemovesModelsThenProviders(t *testing.T) {
+	organizationID := uuid.New()
+	first, second := uuid.New(), uuid.New()
+	providers := &fakeProviderStore{}
+	models := &fakeModelStore{organizationModelIDs: []uuid.UUID{first, second}}
+	server := newTestServer(providers, models)
+
+	// Internal RPC: no identity in the context, and none required.
+	_, err := server.DeleteOrganizationResources(context.Background(), &llmv1.DeleteOrganizationResourcesRequest{
+		OrganizationId: organizationID.String(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models.deletedIDs) != 2 {
+		t.Fatalf("expected both models deleted, got %v", models.deletedIDs)
+	}
+	// Providers last: models reference them, so the provider delete only
+	// succeeds once the models are gone.
+	if len(providers.deletedByOrganization) != 1 || providers.deletedByOrganization[0] != organizationID {
+		t.Fatalf("expected providers cleared once for %s, got %v", organizationID, providers.deletedByOrganization)
+	}
+}
+
+func TestDeleteOrganizationResourcesWithoutSubscriptionStore(t *testing.T) {
+	// Subscriptions are optional deps -- a deployment without native mode
+	// configured has no store, and the teardown still has to run.
+	server := newTestServer(&fakeProviderStore{}, &fakeModelStore{})
+	_, err := server.DeleteOrganizationResources(context.Background(), &llmv1.DeleteOrganizationResourcesRequest{
+		OrganizationId: uuid.New().String(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeleteOrganizationResourcesRejectsInvalidOrganizationID(t *testing.T) {
+	server := newTestServer(&fakeProviderStore{}, &fakeModelStore{})
+	_, err := server.DeleteOrganizationResources(context.Background(), &llmv1.DeleteOrganizationResourcesRequest{
+		OrganizationId: "not-a-uuid",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }

@@ -56,6 +56,13 @@ func (s *Store) Detach(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// DeleteAttachmentsByOrganization removes the organization's attachments,
+// ahead of the subscriptions they name.
+func (s *Store) DeleteAttachmentsByOrganization(ctx context.Context, organizationID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM subscription_attachments WHERE organization_id = $1`, organizationID)
+	return err
+}
+
 func (s *Store) ListAttachments(ctx context.Context, filter AttachmentFilter, pageSize int32, cursor *PageCursor) (AttachmentListResult, error) {
 	limit := normalizePageSize(pageSize)
 
