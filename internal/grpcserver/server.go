@@ -472,6 +472,37 @@ func (s *Server) ListModels(ctx context.Context, req *llmv1.ListModelsRequest) (
 	return resp, nil
 }
 
+// ResolveModelExists reports whether a model exists in an organization.
+//
+// It is a dedicated existence check rather than GetModel because the caller is
+// another service validating a reference before it persists it — today the
+// Apps Service, resolving an x-agyn-ref property on an app installation. It
+// acts for an admin whose own `can_use` on the model is beside the point, and
+// it needs one boolean rather than a record it would have to be trusted not to
+// leak. Internal only: no OpenFGA check.
+//
+// A model in another organization answers false exactly as a nonexistent one
+// does, so the caller cannot use the check to probe for models elsewhere.
+func (s *Server) ResolveModelExists(ctx context.Context, req *llmv1.ResolveModelExistsRequest) (*llmv1.ResolveModelExistsResponse, error) {
+	modelID, err := parseUUID(req.GetModelId(), "model_id")
+	if err != nil {
+		return nil, err
+	}
+	organizationID, err := parseUUID(req.GetOrganizationId(), "organization_id")
+	if err != nil {
+		return nil, err
+	}
+
+	mdl, err := s.models.Get(ctx, modelID)
+	if err != nil {
+		if errors.Is(err, model.ErrModelNotFound) {
+			return &llmv1.ResolveModelExistsResponse{Exists: false}, nil
+		}
+		return nil, toStatusError(err)
+	}
+	return &llmv1.ResolveModelExistsResponse{Exists: mdl.OrganizationID == organizationID}, nil
+}
+
 func (s *Server) ResolveModel(ctx context.Context, req *llmv1.ResolveModelRequest) (*llmv1.ResolveModelResponse, error) {
 	modelID, err := parseUUID(req.GetModelId(), "model_id")
 	if err != nil {
