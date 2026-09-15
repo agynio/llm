@@ -1,7 +1,7 @@
 version: v2beta1
 
 vars:
-  LLM_NAMESPACE: platform
+  LLM_NAMESPACE: agyn-platform
 
 functions:
   disable_argocd_sync: |-
